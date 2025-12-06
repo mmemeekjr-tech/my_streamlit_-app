@@ -49,7 +49,6 @@ elif input_option == "Upload CSV/Excel":
             else:
                 df_input = pd.read_excel(uploaded_file)
 
-            # Check if 'text' column exists
             if "text" not in df_input.columns:
                 st.error("Uploaded file must contain a column named 'text'")
                 st.stop()
@@ -67,58 +66,42 @@ if not texts:
 # Helpers: parse JSON from model output and retry logic
 # -----------------------------
 def extract_json_from_text(text):
-    """
-    Try to extract the first JSON object from a text response.
-    Handles cases where model wraps JSON in ```json ... ``` or code fences.
-    """
     if not text:
         return None
-    # Try to find a JSON block between braces
-    # First, remove markdown code fences
     cleaned = re.sub(r"```(?:json)?\s*", "", text)
     cleaned = re.sub(r"```\s*", "", cleaned)
-    # Find the first {...} JSON object
     match = re.search(r"\{(?:[^{}]|(?R))*\}", cleaned, flags=re.DOTALL)
     if match:
         try:
             return json.loads(match.group(0))
         except Exception:
-            # fallback: try to fix common issues (e.g., single quotes)
             try:
                 fixed = match.group(0).replace("'", '"')
                 return json.loads(fixed)
             except Exception:
                 return None
-    # If no braces found, maybe it's a plain JSON-like line-by-line key:value pairs
     try:
         return json.loads(cleaned.strip())
     except Exception:
         return None
 
-def call_with_retries(prompt, max_retries=5, base_delay=1.0):
-    """
-    Call the OpenAI chat completion with exponential backoff on 429 or transient errors.
-    Returns the raw text content on success, or raises the last exception.
-    """
+def call_with_retries(prompt, max_retries=10, base_delay=2.0):
     attempt = 0
     while True:
         try:
             response = client.chat.completions.create(
-                model="gpt-4.1-mini",
+                model="gpt-3.5-turbo",  # ใช้รุ่นนี้เพื่อลด error 429
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0
             )
-            # Access content robustly
             content = ""
             if hasattr(response, "choices") and len(response.choices) > 0:
-                # Some SDKs return message under .message.content
                 choice = response.choices[0]
                 if hasattr(choice, "message") and hasattr(choice.message, "content"):
                     content = choice.message.content
                 elif hasattr(choice, "text"):
                     content = choice.text
                 else:
-                    # fallback to string conversion
                     content = str(choice)
             else:
                 content = str(response)
@@ -126,16 +109,13 @@ def call_with_retries(prompt, max_retries=5, base_delay=1.0):
         except Exception as e:
             err_str = str(e).lower()
             attempt += 1
-            # If rate limit or transient network error, retry
-            if ("429" in err_str or "rate limit" in err_str or "timeout" in err_str or attempt <= max_retries):
+            if ("429" in err_str or "rate limit" in err_str or "timeout" in err_str):
                 if attempt > max_retries:
                     raise
-                # exponential backoff with jitter
                 sleep_time = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 0.5)
                 time.sleep(sleep_time)
                 continue
             else:
-                # non-retriable error
                 raise
 
 # -----------------------------
@@ -166,7 +146,6 @@ Text: \"\"\"{text}\"\"\"
         raw = call_with_retries(prompt)
         parsed = extract_json_from_text(raw)
         if parsed is None:
-            # If parsing failed, return an informative error structure
             return {
                 "sentiment_en": "error",
                 "sentiment_th": "error",
@@ -174,7 +153,6 @@ Text: \"\"\"{text}\"\"\"
                 "emotion_th": "error",
                 "explanation": "Failed to parse JSON from model response. Raw response: " + (raw[:1000] if raw else "empty")
             }
-        # Ensure all keys exist
         for k in ["sentiment_en", "sentiment_th", "emotion_en", "emotion_th", "explanation"]:
             if k not in parsed:
                 parsed[k] = ""
@@ -199,11 +177,11 @@ total = len(texts)
 
 for i, txt in enumerate(texts, start=1):
     res = analyze_text(txt)
+    time.sleep(1.5)  # เพิ่ม delay ระหว่างข้อความ
     res["text"] = txt
     results.append(res)
     progress_bar.progress(i / total)
 
-# Create DataFrame
 df_results = pd.DataFrame(results)[['text', 'sentiment_en', 'sentiment_th', 'emotion_en', 'emotion_th', 'explanation']]
 
 st.subheader("Analysis Results")
@@ -219,12 +197,11 @@ sentiment_counts = df_results['sentiment_en'].value_counts()
 if sentiment_counts.empty:
     st.write("No sentiment data to plot.")
 else:
-    # Map colors dynamically to present categories
     color_map = {
-        "positive": "#2ca02c",  # green
-        "neutral": "#7f7f7f",   # gray
-        "negative": "#d62728",  # red
-        "error": "#9467bd"      # purple for errors
+        "positive": "#2ca02c",
+        "neutral": "#7f7f7f",
+        "negative": "#d62728",
+        "error": "#9467bd"
     }
     colors = [color_map.get(k, "#1f77b4") for k in sentiment_counts.index]
 
@@ -241,10 +218,8 @@ emotion_counts = df_results['emotion_en'].value_counts()
 if emotion_counts.empty:
     st.write("No emotion data to plot.")
 else:
-    # For pie chart, ensure there are at least two categories or handle single slice
     fig2, ax2 = plt.subplots()
     if len(emotion_counts) == 1:
-        # Single slice: draw a bar instead for clarity
         single_label = emotion_counts.index[0]
         fig3, ax3 = plt.subplots()
         ax3.bar([single_label], [emotion_counts.iloc[0]], color="#1f77b4")

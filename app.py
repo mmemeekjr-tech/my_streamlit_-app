@@ -1,160 +1,152 @@
+# app.py
 import streamlit as st
 import pandas as pd
-import time
 import json
-from openai import OpenAI
 import google.generativeai as genai
+from openai import OpenAI
+import matplotlib.pyplot as plt
 
 # -----------------------------
-# Sidebar: API Keys
+# Sidebar: API Key Input
 # -----------------------------
-st.sidebar.title("🔑 API Settings")
+st.sidebar.title("API Settings")
+openai_api_key = st.sidebar.text_input("Enter OpenAI API Key", type="password")
 
-openai_key = st.sidebar.text_input("OpenAI API Key", type="password")
-gemini_key = st.sidebar.text_input("Google Gemini API Key", type="password")
+if not openai_api_key:
+    st.warning("Please enter your OpenAI API Key to use the app.")
+    st.stop()
 
-# Validate API
-if openai_key:
-    openai_client = OpenAI(api_key=openai_key)
-
-if gemini_key:
-    genai.configure(api_key=gemini_key)
-
-st.title("🎮 เกม: ถ้าหนูถามพี่จะรับปะ?")
-st.markdown("**ตอบคำถามสถานการณ์สนุก ๆ ภายใน 10 วินาที**")
-
+# Initialize OpenAI client
+client = OpenAI(api_key=openai_api_key)
 
 # -----------------------------
-# Load Prompt Template
+# App Title
 # -----------------------------
-def load_prompt():
-    with open("questions_prompt.txt", "r", encoding="utf-8") as f:
-        return f.read()
-
-prompt_template = load_prompt()
-
+st.title("AI Sentiment & Emotion Dashboard")
+st.write("Analyze text for sentiment and emotion (English + Thai)")
 
 # -----------------------------
-# Generate Questions with LLM
+# Input: Text or File
 # -----------------------------
-def generate_questions_with_llm():
-    """Generate 10 NLP questions using OpenAI or Gemini."""
-    try:
-        response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt_template}]
-        )
-        text = response.choices[0].message.content
-        questions = json.loads(text)
-        return questions
-    except Exception:
-        # fallback to Gemini
-        model = genai.GenerativeModel("gemini-pro")
-        response = model.generate_content(prompt_template)
-        questions = json.loads(response.text)
-        return questions
+input_option = st.radio("Choose input type:", ("Type Text", "Upload CSV/Excel"))
 
+texts = []
 
-# -----------------------------
-# Game Session
-# -----------------------------
-if "questions" not in st.session_state:
-    st.session_state.questions = None
-    st.session_state.answers = []
-    st.session_state.index = 0
+if input_option == "Type Text":
+    user_text = st.text_area("Enter your text here:", height=150)
+    if user_text:
+        texts.append(user_text)
 
+elif input_option == "Upload CSV/Excel":
+    uploaded_file = st.file_uploader("Upload CSV or Excel file", type=["csv", "xlsx"])
+    if uploaded_file:
+        try:
+            if uploaded_file.name.endswith(".csv"):
+                df_input = pd.read_csv(uploaded_file)
+            else:
+                df_input = pd.read_excel(uploaded_file)
+            
+            # Check if 'text' column exists
+            if "text" not in df_input.columns:
+                st.error("Uploaded file must contain a column named 'text'")
+                st.stop()
+            
+            texts = df_input['text'].astype(str).tolist()
+        except Exception as e:
+            st.error(f"Error reading file: {e}")
+            st.stop()
 
-if st.button("เริ่มเกม 🎯"):
-    if not openai_key and not gemini_key:
-        st.error("กรุณาใส่อย่างน้อย 1 API Key ก่อนเริ่มเกม!")
-    else:
-        st.session_state.questions = generate_questions_with_llm()
-        st.session_state.answers = []
-        st.session_state.index = 0
-        st.success("เริ่มเกมแล้ว! เลื่อนลงด้านล่างเพื่อเล่น")
-
+if not texts:
+    st.info("Please enter text or upload a file to analyze.")
+    st.stop()
 
 # -----------------------------
-# Show Question Section
+# Function: Analyze Sentiment & Emotion
 # -----------------------------
-if st.session_state.questions:
+def analyze_text(text):
+    prompt = f"""
+You are an advanced NLP assistant.
 
-    q_index = st.session_state.index
+Task:
+1. Classify the sentiment of the following text: choose ONLY from ["positive", "neutral", "negative"].
+2. Classify the emotion: choose ONLY from ["joy", "sadness", "anger", "fear", "surprise", "disgust", "neutral"].
+3. Provide both English and Thai translations for sentiment and emotion.
+4. Explain briefly why in 2–3 sentences.
 
-    if q_index < len(st.session_state.questions):
-        q = st.session_state.questions[q_index]
+Output strictly in JSON format like:
+{{
+    "sentiment_en": "",
+    "sentiment_th": "",
+    "emotion_en": "",
+    "emotion_th": "",
+    "explanation": ""
+}}
 
-        st.subheader(f"ข้อ {q['id']}: {q['question']}")
-
-        # --------------------
-        # Countdown Timer
-        # --------------------
-        start = time.time()
-        placeholder = st.empty()
-
-        for sec in range(10, 0, -1):
-            placeholder.info(f"⏳ เหลือเวลา {sec} วินาที")
-            time.sleep(1)
-        placeholder.empty()
-
-        # --------------------
-        # Answer Buttons
-        # --------------------
-        col1, col2 = st.columns(2)
-        clicked = st.session_state.get("clicked", False)
-
-        if not clicked:
-            with col1:
-                if st.button("รับก็ 👍"):
-                    st.session_state.answers.append(
-                        {"question": q["question"], "answer": "รับก็",
-                         "time_used": round(time.time() - start, 2), "skipped": False}
-                    )
-                    st.session_state.clicked = True
-            with col2:
-                if st.button("ไม่รับดีกว่า 👎"):
-                    st.session_state.answers.append(
-                        {"question": q["question"], "answer": "ไม่รับดีกว่า",
-                         "time_used": round(time.time() - start, 2), "skipped": False}
-                    )
-                    st.session_state.clicked = True
-
-        # Auto skip if timeout
-        if not clicked:
-            st.warning("หมดเวลา! ข้ามข้อนี้ไปเลยนะ")
-            st.session_state.answers.append(
-                {"question": q["question"], "answer": None,
-                 "time_used": None, "skipped": True}
-            )
-
-        if st.session_state.clicked or True:
-            st.session_state.index += 1
-            st.session_state.clicked = False
-            st.rerun()
-
-    else:
-        st.success("🎉 จบเกมแล้ว!")
-        df = pd.DataFrame(st.session_state.answers)
-        st.dataframe(df)
-
-        # Download CSV
-        csv = df.to_csv(index=False).encode("utf-8")
-        st.download_button("ดาวน์โหลดผลลัพธ์ CSV", csv, "results.csv")
-
-        # Download Excel
-        excel = df.to_excel("results.xlsx", index=False)
-        with open("results.xlsx", "rb") as f:
-            st.download_button("ดาวน์โหลดผลลัพธ์ Excel", f, "results.xlsx")
-
-        # Analyze Personality
-        if openai_key:
-            analysis_prompt = f"""
-วิเคราะห์บุคลิกจากการเล่นเกมนี้ จากข้อมูล: {df.to_dict()}    
-สรุปแบบสนุก ๆ และตรงไปตรงมา ไม่ต้องยาวมาก
+Text: \"\"\"{text}\"\"\"
 """
-            res = openai_client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[{"role": "user", "content": analysis_prompt}]
-            )
-            st.subheader("🧠 ผลวิเคราะห์บุคลิก")
-            st.write(res.choices[0].message.content)
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0
+        )
+        content = response.choices[0].message.content
+        data = json.loads(content)
+        return data
+    except Exception as e:
+        return {
+            "sentiment_en": "error",
+            "sentiment_th": "error",
+            "emotion_en": "error",
+            "emotion_th": "error",
+            "explanation": str(e)
+        }
+
+# -----------------------------
+# Analyze all texts
+# -----------------------------
+st.info("Analyzing texts... This may take a few seconds per text.")
+results = []
+
+for txt in texts:
+    res = analyze_text(txt)
+    res["text"] = txt
+    results.append(res)
+
+# Create DataFrame
+df_results = pd.DataFrame(results)[['text', 'sentiment_en', 'sentiment_th', 'emotion_en', 'emotion_th', 'explanation']]
+
+st.subheader("Analysis Results")
+st.dataframe(df_results, use_container_width=True)
+
+# -----------------------------
+# Visualization
+# -----------------------------
+st.subheader("Summary Charts")
+
+# Sentiment Count
+sentiment_counts = df_results['sentiment_en'].value_counts()
+fig, ax = plt.subplots()
+sentiment_counts.plot(kind='bar', color=['green','gray','red'], ax=ax)
+ax.set_title("Sentiment Count")
+ax.set_ylabel("Number of texts")
+st.pyplot(fig)
+
+# Emotion Count
+emotion_counts = df_results['emotion_en'].value_counts()
+fig2, ax2 = plt.subplots()
+emotion_counts.plot(kind='pie', autopct='%1.1f%%', startangle=140, ax=ax2)
+ax2.set_ylabel("")
+ax2.set_title("Emotion Distribution")
+st.pyplot(fig2)
+
+# -----------------------------
+# Download CSV
+# -----------------------------
+csv = df_results.to_csv(index=False)
+st.download_button(
+    label="Download CSV",
+    data=csv,
+    file_name="sentiment_emotion_analysis.csv",
+    mime="text/csv"
+)

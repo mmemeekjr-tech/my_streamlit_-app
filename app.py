@@ -40,7 +40,7 @@ except Exception:
 APP_TITLE = "ถ้าหนูถามพี่จะรับปะ?"
 DB_FILENAME = "game_leaderboard.db"
 QUESTIONS_FILENAME = "questions_bank.csv"
-DEFAULT_MODEL = "gemini-pro"
+DEFAULT_MODEL = ""
 
 # ----------------- PAGE SETUP -----------------
 st.set_page_config(page_title=APP_TITLE, layout="centered", initial_sidebar_state="expanded")
@@ -221,6 +221,72 @@ def init_session():
         st.session_state.last_round_score = 0
 
 init_session()
+
+def list_gemini_models():
+    """Try several genai listing helpers and return a list of model names (best-effort).
+
+    The google.generativeai package exposes different listing helpers across versions,
+    so this function tries a few options and normalizes results.
+    """
+    if not HAVE_GENAI:
+        return []
+    names = []
+    # Try genai.list_models()
+    try:
+        resp = genai.list_models()
+        if isinstance(resp, dict) and "models" in resp:
+            for m in resp["models"]:
+                if isinstance(m, dict):
+                    names.append(m.get("name") or m.get("model") or m.get("id"))
+                else:
+                    names.append(str(m))
+        elif isinstance(resp, list):
+            for m in resp:
+                if isinstance(m, dict):
+                    names.append(m.get("name") or m.get("model") or m.get("id"))
+                else:
+                    names.append(str(m))
+        if names:
+            return [n for n in names if n]
+    except Exception:
+        pass
+
+    # Try genai.get_models()
+    try:
+        resp = genai.get_models()
+        if isinstance(resp, dict) and "models" in resp:
+            for m in resp["models"]:
+                if isinstance(m, dict):
+                    names.append(m.get("name") or m.get("model") or m.get("id"))
+                else:
+                    names.append(str(m))
+        if names:
+            return [n for n in names if n]
+    except Exception:
+        pass
+
+    # Try genai.models.list() which some versions provide
+    try:
+        resp = genai.models.list()
+        # resp may have .data or be a list
+        if hasattr(resp, "data"):
+            for m in resp.data:
+                # m may be an object with .name
+                name = getattr(m, "name", None) or getattr(m, "id", None)
+                if name:
+                    names.append(name)
+        elif isinstance(resp, list):
+            for m in resp:
+                if hasattr(m, "name"):
+                    names.append(m.name)
+                elif isinstance(m, dict):
+                    names.append(m.get("name") or m.get("id"))
+        if names:
+            return [n for n in names if n]
+    except Exception:
+        pass
+
+    return []
 
 # ----------------- DATABASE (SQLite) -----------------
 def init_db():
@@ -640,10 +706,22 @@ if st.session_state.openai_key or (st.session_state.gemini_key and HAVE_GENAI):
         elif st.session_state.gemini_key and HAVE_GENAI:
             try:
                 genai.configure(api_key=st.session_state.gemini_key)
+                # Try to list available models and fall back to a supported one if needed
+                available = list_gemini_models()
+                if available:
+                    if not st.session_state.model_name or st.session_state.model_name not in available:
+                        # pick the first available model as a sensible default
+                        chosen = available[0]
+                        st.warning(f"Model '{st.session_state.model_name}' ไม่พบสำหรับ Gemini — ใช้ '{chosen}' แทน (รายการที่พบ: {', '.join(available)})")
+                        st.session_state.model_name = chosen
+                else:
+                    st.warning("ไม่พบโมเดล Gemini ที่รองรับจากไลบรารี — ตรวจสอบ API key หรือเวอร์ชันของไลบรารี")
+
                 model = genai.GenerativeModel(st.session_state.model_name)
                 resp = model.generate_content(prompt)
+                out = getattr(resp, "text", None) or str(resp)
                 st.markdown("**ผลวิเคราะห์ (Gemini):**")
-                st.write(resp.text)
+                st.write(out)
             except Exception as e:
                 st.error(f"Gemini วิเคราะห์ไม่ได้: {e}")
         else:

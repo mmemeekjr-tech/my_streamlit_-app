@@ -9,6 +9,7 @@ Features:
 - Import/export questions
 - Export summary CSV/Excel
 - Optional Gemini/OpenAI API for analysis or generating questions
+- Bar charts and personality tiers
 """
 
 import streamlit as st
@@ -19,7 +20,7 @@ import sqlite3
 from datetime import datetime
 import io
 import os
-import xlsxwriter
+import xlsxwriter  # required by pandas ExcelWriter engine
 
 # Optional: Gemini (google.generativeai)
 try:
@@ -28,7 +29,6 @@ try:
 except Exception:
     HAVE_GENAI = False
 
-# Optional: openai will be imported only if key provided
 # ----------------- CONFIG -----------------
 APP_TITLE = "ถ้าหนูถามพี่จะรับปะ?"
 DB_FILENAME = "game_leaderboard.db"
@@ -75,6 +75,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title(f"🎮 {APP_TITLE}")
+st.write("ธีม: Blue / Dark — เล่นง่าย ส่งงานได้ทันที")
 
 # ----------------- QUESTIONS: 100 แบบจริง ๆ -----------------
 DEFAULT_QUESTIONS = [
@@ -283,6 +284,30 @@ def summary_df_from_answers():
         df = df[df["question"].isin(st.session_state.round_questions)]
     return df
 
+def compute_answer_stats():
+    answers = st.session_state.answers or []
+    n = len(answers)
+    got = sum(1 for a in answers if a["answer"] == "ได้ดิ")
+    maybe = sum(1 for a in answers if a["answer"] == "อาจจะยัง")
+    timeout = sum(1 for a in answers if a["answer"] == "TIMEOUT" or a.get("timed_out"))
+    avg_time = None
+    times = [a.get("elapsed_sec") for a in answers if a.get("elapsed_sec") is not None]
+    if times:
+        avg_time = sum(times)/len(times)
+    return {"total": n, "ได้ดิ": got, "อาจจะยัง": maybe, "timeout": timeout, "avg_time": avg_time}
+
+def personality_tier(stats):
+    # Determine tier based on % ของ "ได้ดิ"
+    total_answered = stats["ได้ดิ"] + stats["อาจจะยัง"] + stats["timeout"]
+    if total_answered == 0:
+        return ("ยังไม่มีข้อมูล", "ตอบน้อยไป — ลองเล่นสักรอบก่อนนะ!")
+    pct_yes = (stats["ได้ดิ"] / total_answered) * 100
+    if pct_yes >= 70:
+        return ("🔥 กล้าเสี่ยง (Risk-taker)", "คุณค่อนข้างกล้า 'ได้ดิ' บ่อย — เปิดใจลองสิ่งใหม่ๆ เยอะ")
+    if pct_yes >= 40:
+        return ("⚖️ กลางๆ (Balanced)", "มีทั้งได้และไม่ ได้ — เป็นคนพิจารณาก่อนตัดสินใจ")
+    return ("🛡️ ระมัดระวัง (Cautious)", "มักตอบ 'อาจจะยัง' หรือหมดเวลา — ระวังและคิดรอบคอบ")
+
 # ----------------- SIDEBAR -----------------
 st.sidebar.header("ตั้งค่าเกม / API Keys")
 st.session_state.player = st.sidebar.text_input("ชื่อผู้เล่น", value=st.session_state.player)
@@ -299,199 +324,3 @@ if upload is not None:
         if "question" in dfq.columns:
             st.session_state.questions = dfq["question"].astype(str).tolist()
             dfq.to_csv(QUESTIONS_FILENAME, index=False)
-            st.sidebar.success(f"โหลดคำถาม {len(st.session_state.questions)} ข้อแล้ว")
-        else:
-            st.sidebar.error("ไฟล์ต้องมีคอลัมน์ชื่อ 'question'")
-    except Exception as e:
-        st.sidebar.error(f"อ่านไฟล์ล้มเหลว: {e}")
-
-st.sidebar.markdown("---")
-if st.sidebar.button("เริ่มรอบใหม่ (สุ่ม 10 ข้อ)"):
-    new_round()
-    st.rerun()
-
-st.sidebar.markdown("**Note:** Timer เป็น server-side (ถ้าไม่กดอะไรและไม่มี rerun จะรออยู่)")
-
-# If user provided Gemini key and package available, configure
-if HAVE_GENAI and st.session_state.gemini_key:
-    try:
-        genai.configure(api_key=st.session_state.gemini_key)
-    except Exception:
-        st.sidebar.error("ไม่สามารถตั้งค่า Gemini API ด้วยคีย์นี้")
-
-# ----------------- MAIN UI -----------------
-colL, colR = st.columns([2,1])
-
-with colL:
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-
-    if not st.session_state.round_questions:
-        st.info("ยังไม่มีรอบที่เริ่ม — กด 'เริ่มรอบใหม่' ทาง sidebar หรือปุ่มด้านล่าง")
-        if st.button("เริ่มรอบใหม่ (สุ่ม 10 ข้อ)"):
-            new_round()
-            st.rerun()
-    else:
-        idx = st.session_state.q_index
-        total = len(st.session_state.round_questions)
-        st.progress(idx/total)
-
-        if idx >= total:
-            st.success("✔ จบรอบแล้ว — ดูสรุปด้านล่าง")
-        else:
-            q = st.session_state.round_questions[idx]
-
-            st.markdown(f'<div class="question-box"><h4>ข้อที่ {idx+1}/{total}</h4><p style="font-size:16px;">{q}</p></div>',
-                        unsafe_allow_html=True)
-
-            # timer start
-            if st.session_state.start_time is None:
-                st.session_state.start_time = time.time()
-
-            elapsed = time.time() - st.session_state.start_time
-            remain = max(0, 10 - int(elapsed))
-            st.write(f"⏳ เวลาเหลือ (โดยประมาณ): **{remain}** วินาที")
-            st.write('<div class="small-muted">หมายเหตุ: ถ้าตอบหลังเวลาจะถูกบันทึกเป็น TIMEOUT</div>', unsafe_allow_html=True)
-
-            a1, a2 = st.columns(2)
-            if a1.button("✅ ได้ดิ"):
-                if elapsed > 10:
-                    record_answer(q, None, timed_out=True, elapsed_sec=elapsed)
-                    st.warning("ตอบช้า — บันทึกเป็น TIMEOUT")
-                else:
-                    record_answer(q, "ได้ดิ", timed_out=False, elapsed_sec=elapsed)
-                    st.success("บันทึก: ได้ดิ (+1 คะแนน)")
-                st.session_state.q_index += 1
-                st.session_state.start_time = time.time()
-                st.rerun()
-
-            if a2.button("❌ อาจจะยัง"):
-                if elapsed > 10:
-                    record_answer(q, None, timed_out=True, elapsed_sec=elapsed)
-                    st.warning("ตอบช้า — บันทึกเป็น TIMEOUT")
-                else:
-                    record_answer(q, "อาจจะยัง", timed_out=False, elapsed_sec=elapsed)
-                    st.success("บันทึก: อาจจะยัง (+1 คะแนน)")
-                st.session_state.q_index += 1
-                st.session_state.start_time = time.time()
-                st.rerun()
-
-            # server-side timeout detection (when rerun occurs)
-            if elapsed > 10:
-                # record timeout and move on
-                record_answer(q, None, timed_out=True, elapsed_sec=elapsed)
-                st.info("หมดเวลา → ข้ามข้อนี้ (บันทึก TIMEOUT)")
-                st.session_state.q_index += 1
-                st.session_state.start_time = time.time()
-                st.rerun()
-
-    st.markdown('</div>', unsafe_allow_html=True)
-
-with colR:
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.subheader("🏆 Leaderboard & Score")
-    if st.session_state.player:
-        st.write(f"ผู้เล่น: **{st.session_state.player}**")
-    else:
-        st.write("ผู้เล่น: (anonymous)")
-    st.write(f"คะแนนรอบนี้: **{st.session_state.last_round_score}**")
-
-    if st.button("บันทึกคะแนนรอบนี้"):
-        if st.session_state.player:
-            update_leaderboard(st.session_state.player, st.session_state.last_round_score)
-            st.success("บันทึกคะแนนสำเร็จ")
-        else:
-            st.warning("กรุณากรอกชื่อผู้เล่นใน sidebar เพื่อบันทึก")
-
-    df_lb = get_leaderboard_df()
-    if df_lb.empty:
-        st.write("ยังไม่มีคะแนน")
-    else:
-        st.dataframe(df_lb)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-# ----------------- SUMMARY -----------------
-st.markdown("---")
-st.subheader("📊 สรุปผลรอบนี้")
-if st.session_state.answers:
-    df_sum = summary_df_from_answers()
-    # show columns in nice order
-    cols_order = ["player", "question", "answer", "timed_out", "elapsed_sec", "timestamp"]
-    df_sum = df_sum[[c for c in cols_order if c in df_sum.columns]]
-
-    st.dataframe(df_sum)
-
-    # download CSV
-    csv = df_sum.to_csv(index=False).encode("utf-8")
-    st.download_button("ดาวน์โหลดสรุป (CSV)", csv, "summary.csv", "text/csv")
-
- # export Excel
-bio = io.BytesIO()
-with pd.ExcelWriter(bio, engine="xlsxwriter") as w:
-    df_sum.to_excel(w, index=False, sheet_name="summary")
-bio.seek(0)
-
-st.download_button(
-    "ดาวน์โหลดสรุป (Excel)",
-    bio,
-    "summary.xlsx",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-)
-   
-
-# ----------------- QUESTION BANK -----------------
-st.markdown("---")
-st.subheader("📘 Question Bank")
-st.write(f"จำนวนคำถามทั้งหมด: {len(st.session_state.questions)}")
-
-if st.button("บันทึกคำถามเป็นไฟล์ (questions_bank.csv)"):
-    pd.DataFrame({"question": st.session_state.questions}).to_csv(QUESTIONS_FILENAME, index=False)
-    st.success("บันทึกคำถามแล้ว")
-
-if os.path.exists(QUESTIONS_FILENAME):
-    with open(QUESTIONS_FILENAME, "rb") as f:
-        st.download_button("ดาวน์โหลด questions_bank.csv", f.read(),
-                           file_name=QUESTIONS_FILENAME, mime="text/csv")
-
-# ----------------- OPTIONAL: ANALYZE WITH LLM -----------------
-st.markdown("---")
-st.subheader("🧠 วิเคราะห์สไตล์การตอบด้วย AI (optional)")
-
-if st.session_state.openai_key or st.session_state.gemini_key:
-    prompt = f"สรุปสไตล์การตอบของผู้เล่น {st.session_state.player or 'anonymous'} จากตารางนี้:\n\n"
-    if st.session_state.answers:
-        prompt += pd.DataFrame(st.session_state.answers).to_string()
-    else:
-        prompt += "ยังไม่มีคำตอบ"
-
-    if st.button("ให้ AI วิเคราะห์"):
-        # Prefer OpenAI if key provided
-        if st.session_state.openai_key:
-            try:
-                import openai
-                openai.api_key = st.session_state.openai_key
-                resp = openai.ChatCompletion.create(
-                    model="gpt-4o-mini",
-                    messages=[{"role":"user","content":prompt}],
-                    max_tokens=400
-                )
-                out = resp["choices"][0]["message"]["content"]
-                st.markdown("**ผลวิเคราะห์ (OpenAI):**")
-                st.write(out)
-            except Exception as e:
-                st.error(f"OpenAI วิเคราะห์ไม่ได้: {e}")
-        elif st.session_state.gemini_key and HAVE_GENAI:
-            try:
-                genai.configure(api_key=st.session_state.gemini_key)
-                resp = genai.generate_text(model=st.session_state.model_name, prompt=prompt, max_output_tokens=500)
-                st.markdown("**ผลวิเคราะห์ (Gemini):**")
-                st.write(resp.text)
-            except Exception as e:
-                st.error(f"Gemini วิเคราะห์ไม่ได้: {e}")
-        else:
-            st.error("ไม่มี LLM ที่ใช้งานได้ — กรุณาใส่ OpenAI หรือ Gemini API key")
-else:
-    st.info("กรอก OpenAI API Key หรือ Google Gemini API Key ใน sidebar ถ้าต้องการให้ AI วิเคราะห์")
-
-# ----------------- NOTES -----------------
-st.markdown("---")
-st.caption("หมายเหตุ: Timer ใน Streamlit ทำงานแบบ server-side — ถ้าผู้เล่นไม่ทำอะไรและไม่มีการ rerun หน้า จะไม่เลื่อนไปอัตโนมัติ. ถ้าต้องการ client-side timeout ที่เลื่อนไปเองต้องมี JavaScript component (ขอได้ถ้าต้องการ).")

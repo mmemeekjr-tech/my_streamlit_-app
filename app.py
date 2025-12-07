@@ -725,11 +725,9 @@ if st.session_state.openai_key or (st.session_state.gemini_key and HAVE_GENAI):
                     if not st.session_state.model_name or st.session_state.model_name not in available:
                         # pick the first available model as a sensible default
                         chosen = available[0]
-                        st.warning(f"Model '{st.session_state.model_name}' ไม่พบสำหรับ Gemini — ใช้ '{chosen}' แทน (รายการที่พบ: {', '.join(available)})")
                         st.session_state.model_name = chosen
                 else:
-                    st.warning("ไม่พบโมเดล Gemini ที่รองรับจากไลบรารี — ตรวจสอบ API key หรือเวอร์ชันของไลบรารี")
-
+                    pass
                 # Use compatibility helper to call genai (tries generate_content first)
                 resp = generate_with_genai(st.session_state.model_name, prompt)
 

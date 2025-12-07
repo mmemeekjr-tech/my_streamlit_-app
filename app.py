@@ -69,18 +69,36 @@ def rule_based_classify(text):
 # -----------------------------
 # Gemini API (real implementation)
 # -----------------------------
+import google.generativeai as genai
+import json, re
+
+def get_available_model(api_key):
+    """ดึงชื่อโมเดลจริงจาก API เพื่อป้องกัน 404"""
+    genai.configure(api_key=api_key)
+    models = genai.list_models()
+    
+    # เลือกโมเดลที่รองรับ generateContent
+    for m in models:
+        if "generateContent" in m.supported_generation_methods:
+            if "gemini-1.5" in m.name:
+                return m.name  # เช่น models/gemini-1.5-flash-001
+    
+    # fallback
+    return "models/gemini-1.5-flash"
+
 def call_gemini(text, api_key):
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-1.5-flash-latest")
+
+        model_name = get_available_model(api_key)
+        model = genai.GenerativeModel(model_name)
 
         prompt = f"""
-You are a sentiment and emotion classifier.
-
+You are a multilingual sentiment + emotion classifier (Thai + English).
 Classify this text:
 {text}
 
-Respond ONLY in valid JSON:
+Respond in valid JSON only:
 {{
   "sentiment_en": "",
   "sentiment_th": "",
@@ -93,10 +111,8 @@ Respond ONLY in valid JSON:
 
         response = model.generate_content(prompt)
 
-        raw = response.text.strip()
-        raw = re.sub(r"```json|```", "", raw).strip()
-
-        return json.loads(raw)
+        clean = re.sub(r"```json|```", "", response.text).strip()
+        return json.loads(clean)
 
     except Exception as e:
         return {
@@ -104,8 +120,8 @@ Respond ONLY in valid JSON:
             "sentiment_th": "เป็นกลาง",
             "emotion_en": "neutral",
             "emotion_th": "เป็นกลาง",
-            "explanation_en": "LLM error: " + str(e),
-            "explanation_th": "เกิดข้อผิดพลาดจาก LLM: " + str(e)
+            "explanation_en": f"LLM error: {e}",
+            "explanation_th": f"เกิดข้อผิดพลาด: {e}"
         }
 
 

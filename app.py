@@ -254,7 +254,7 @@ with col_left:
     st.markdown('<div class="card">', unsafe_allow_html=True)
     if st.button("เริ่มรอบใหม่ (สุ่ม 10 ข้อ)", key="newround"):
         new_round()
-        st.experimental_rerun()
+        st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 
     if not st.session_state.round_questions:
@@ -292,7 +292,7 @@ with col_left:
                 # prepare next
                 st.session_state.q_index += 1
                 st.session_state.start_time = time.time()
-                st.experimental_rerun()
+                st.rerun()
             if a2.button("❌ ไม่รับดีกว่า"):
                 if elapsed > 10:
                     record_answer(q, None, timed_out=True)
@@ -302,7 +302,7 @@ with col_left:
                     st.success("บันทึก: ไม่รับดีกว่า (+1 คะแนน)")
                 st.session_state.q_index += 1
                 st.session_state.start_time = time.time()
-                st.experimental_rerun()
+                st.rerun()
 
             # server-side timeout detection on rerun
             if elapsed > 10:

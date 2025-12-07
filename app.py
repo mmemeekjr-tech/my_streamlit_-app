@@ -288,6 +288,71 @@ def list_gemini_models():
 
     return []
 
+
+def generate_with_genai(model_name, prompt):
+    """Call google.generativeai using several supported call patterns (best-effort).
+
+    Returns the raw response object from the successful call, or raises the last exception.
+    """
+    last_exc = None
+
+    # 1) module-level generate_text
+    gen_text = getattr(genai, "generate_text", None)
+    if callable(gen_text):
+        try:
+            return gen_text(model=model_name, prompt=prompt, max_output_tokens=500)
+        except TypeError:
+            try:
+                return gen_text(model=model_name, prompt=prompt)
+            except Exception as e:
+                last_exc = e
+        except Exception as e:
+            last_exc = e
+
+    # 2) genai.models.<method>
+    models_ns = getattr(genai, "models", None)
+    if models_ns is not None:
+        for meth in ("generate", "generate_text", "generate_content", "create"):
+            fn = getattr(models_ns, meth, None)
+            if callable(fn):
+                try:
+                    return fn(model=model_name, prompt=prompt, max_output_tokens=500)
+                except TypeError:
+                    try:
+                        return fn(model=model_name, prompt=prompt)
+                    except Exception as e:
+                        last_exc = e
+                except Exception as e:
+                    last_exc = e
+
+    # 3) genai.GenerativeModel(...) instance methods (some versions)
+    GenModel = getattr(genai, "GenerativeModel", None)
+    if callable(GenModel):
+        try:
+            gm = GenModel(model_name)
+            for meth in ("generate_content", "generate_text", "generate"):
+                fn = getattr(gm, meth, None)
+                if callable(fn):
+                    try:
+                        return fn(prompt)
+                    except Exception as e:
+                        last_exc = e
+        except Exception as e:
+            last_exc = e
+
+    # 4) fallback: try genai.generate if present
+    gen_fallback = getattr(genai, "generate", None)
+    if callable(gen_fallback):
+        try:
+            return gen_fallback(model=model_name, prompt=prompt)
+        except Exception as e:
+            last_exc = e
+
+    # If we reach here nothing worked
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("No supported generation method found on google.generativeai module")
+
 # ----------------- DATABASE (SQLite) -----------------
 def init_db():
     conn = sqlite3.connect(DB_FILENAME, check_same_thread=False)

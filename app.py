@@ -19,6 +19,7 @@ import sqlite3
 from datetime import datetime
 import io
 import os
+import xlsxwriter
 
 # Optional: Gemini (google.generativeai)
 try:
@@ -424,16 +425,19 @@ if st.session_state.answers:
     csv = df_sum.to_csv(index=False).encode("utf-8")
     st.download_button("ดาวน์โหลดสรุป (CSV)", csv, "summary.csv", "text/csv")
 
-    # download Excel
-    bio = io.BytesIO()
-    with pd.ExcelWriter(bio, engine="xlsxwriter") as writer:
-        df_sum.to_excel(writer, index=False, sheet_name="summary")
-        writer.save()
-    bio.seek(0)
-    st.download_button("ดาวน์โหลดสรุป (Excel)", bio, "summary.xlsx",
-                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-else:
-    st.info("ยังไม่มีคำตอบ — เริ่มรอบใหม่และตอบคำถามเพื่อดูสรุป")
+ # export Excel
+bio = io.BytesIO()
+with pd.ExcelWriter(bio, engine="xlsxwriter") as w:
+    df_sum.to_excel(w, index=False, sheet_name="summary")
+bio.seek(0)
+
+st.download_button(
+    "ดาวน์โหลดสรุป (Excel)",
+    bio,
+    "summary.xlsx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
+   
 
 # ----------------- QUESTION BANK -----------------
 st.markdown("---")

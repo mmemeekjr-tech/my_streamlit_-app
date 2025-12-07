@@ -86,19 +86,22 @@ def get_available_model(api_key):
     # fallback
     return "models/gemini-1.5-flash"
 
+import google.generativeai as genai
+import json, re
+
 def call_gemini(text, api_key):
     try:
         genai.configure(api_key=api_key)
 
-        model_name = get_available_model(api_key)
-        model = genai.GenerativeModel(model_name)
+        # ชื่อโมเดลที่ถูกต้องสำหรับ python SDK
+        model = genai.GenerativeModel("gemini-1.5-flash")
 
         prompt = f"""
 You are a multilingual sentiment + emotion classifier (Thai + English).
 Classify this text:
 {text}
 
-Respond in valid JSON only:
+Reply ONLY in valid JSON:
 {{
   "sentiment_en": "",
   "sentiment_th": "",
@@ -108,6 +111,22 @@ Respond in valid JSON only:
   "explanation_th": ""
 }}
 """
+
+        response = model.generate_content(prompt)
+
+        clean = re.sub(r"```json|```", "", response.text).strip()
+        return json.loads(clean)
+
+    except Exception as e:
+        return {
+            "sentiment_en": "neutral",
+            "sentiment_th": "เป็นกลาง",
+            "emotion_en": "neutral",
+            "emotion_th": "เป็นกลาง",
+            "explanation_en": f"LLM error: {e}",
+            "explanation_th": f"เกิดข้อผิดพลาด: {e}"
+        }
+
 
         response = model.generate_content(prompt)
 

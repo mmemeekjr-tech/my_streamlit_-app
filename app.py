@@ -1,260 +1,378 @@
-# app.py
+"""
+Streamlit app: ถ้าหนูถามพี่จะรับปะ (Theme A — Pastel Pink)
+Features:
+- Python-only (no JS)
+- 10 questions per round (random from a bank of 100)
+- 10-second timer logic handled server-side as allowed by Streamlit (timeout on rerun)
+- Buttons: "รับดิ" / "ไม่รับดีกว่า"
+- Leaderboard (SQLite) to store username + cumulative score
+- LLM (Google Gemini via google.generativeai) can generate extra questions (optional)
+- Import/export questions via CSV/Excel
+- Export summary CSV/Excel
+- UI styled pastel-pink via CSS
+"""
 import streamlit as st
 import pandas as pd
 import random
 import time
-import io
+import sqlite3
 from datetime import datetime
+import io
+import os
 
-# ---- Optional: Google Gemini (example) ----
-# ให้ติดตั้ง google-generative-ai (pip install google-generative-ai)
-# และใน sidebar ผู้ใช้จะใส่ API key ของ Google Gemini (we'll configure inline).
+# Optional: Gemini
 try:
     import google.generativeai as genai
     HAVE_GENAI = True
 except Exception:
     HAVE_GENAI = False
 
-# ---------------- Config ----------------
-QUESTIONS_DEFAULT = [
-    # 100 ตัวอย่างคำถาม (กรุณาปรับแต่งให้สนุก/เหมาะสม)
-    "พี่ชวนไปเที่ยวทะเล แต่งตัวปิคนิคด้วย — รับปะ?",
-    "พี่จะให้ตั๋วหนังสองใบ แต่ต้องดูหนังผีกับพี่ — รับปะ?",
-    "พี่ขอให้ช่วยกินซูชิคำสุดท้ายของพี่ — รับปะ?",
-    "พี่ยอมจ่ายขนมให้ แต่ต้องเล่าเรื่องประหลาดของตัวเอง — รับปะ?",
-    "พี่จะสอนเต้น TikTok หน่อย แต่ต้องเต้นหน้ากล้อง — รับปะ?",
-    "พี่จะให้ฟังเพลงโปรดทั้งอัลบั้มแบบยาว — รับปะ?",
-    "พี่จะไปคาเฟ่แมวด้วยกัน — รับปะ?",
-    "พี่เอามะม่วงมาแบ่งครึ่งแต่มีแมลงอยู่ข้างใน — รับปะ?",
-    "พี่บอกให้ช่วยเลือกชุดสำคัญ แต่ต้องใส่ไอเท็มตลกหนึ่งชิ้น — รับปะ?",
-    "พี่จะทำ dinner surprise แต่อาหารแปลก — รับปะ?",
-    # (เติมจนครบ 100 — ผมจะทำเป็นตัวอย่าง 100 ข้อสั้น ๆ)
-]
+# ----------------- CONFIG -----------------
+APP_TITLE = "🎀 ถ้าหนูถามพี่จะรับปะ"
+DB_FILENAME = "game_leaderboard.db"
+QUESTIONS_FILENAME = "questions_bank.csv"  # auto-save
+DEFAULT_MODEL = "gemini-pro"  # example
 
-# เติมให้ครบ 100 อัน (ถ้ list สั้นกว่ากำหนด จะวนซ้ำ)
-while len(QUESTIONS_DEFAULT) < 100:
-    QUESTIONS_DEFAULT += [f"สถานการณ์สนุก ๆ ข้อที่ {len(QUESTIONS_DEFAULT)+1} — รับปะ?"]
+# ----------------- PAGE SETUP -----------------
+st.set_page_config(page_title=APP_TITLE, layout="centered", initial_sidebar_state="expanded")
 
-# ---------------- Helpers ----------------
+# Pastel pink styling
+st.markdown(
+    """
+    <style>
+    :root{
+        --main-bg: #fff7fb;
+        --card-bg: #fff0f6;
+        --accent: #ff6fb5;
+        --muted: #8c6b7b;
+    }
+    .stApp {
+        background: linear-gradient(180deg, var(--main-bg), #fff);
+    }
+    .card {
+        background: var(--card-bg);
+        border-radius: 14px;
+        padding: 18px;
+        box-shadow: 0 6px 18px rgba(247, 174, 211, 0.15);
+        border: 1px solid rgba(255,111,181,0.08);
+    }
+    .question-box {
+        background: white;
+        border-radius: 12px;
+        padding: 16px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.04);
+        border-left: 6px solid var(--accent);
+    }
+    .small-muted { color: var(--muted); font-size:12px; }
+    .pink-btn { background-color: var(--accent); color: white; border-radius: 10px; padding: 8px 12px; }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+st.title(APP_TITLE)
+st.write("ธีม: Pastel Pink — UI น่ารัก เหมาะส่งงาน assignment")
+
+# ----------------- SESSION INIT -----------------
 def init_session():
     if "questions" not in st.session_state:
-        st.session_state.questions = QUESTIONS_DEFAULT.copy()
-    if "current_round" not in st.session_state:
-        st.session_state.current_round = []
-    if "round_index" not in st.session_state:
-        st.session_state.round_index = 0
+        # prepare 100 default fun scenarios
+        st.session_state.questions = [
+            "พี่ชวนไปเที่ยวทะเล แต่งตัวปิคนิคด้วย — รับปะ?",
+            "พี่จะให้ตั๋วหนังสองใบ แต่ต้องดูหนังผีกับพี่ — รับปะ?",
+            "พี่ขอให้ช่วยกินซูชิคำสุดท้ายของพี่ — รับปะ?",
+            "พี่อยากให้ช่วยเล่นเกมเขินๆ หน้าไลฟ์ — รับปะ?",
+            "พี่บอกว่าจะสอนเต้น แต่ต้องเต้นหน้ากล้อง — รับปะ?",
+            "พี่ให้ตั๋วคอนเสิร์ตแต่ต้องไปตอนดึก — รับปะ?",
+            "พี่จะพาไปคาเฟ่แมว แต่แมวอาจจะข่วน — รับปะ?",
+            "พี่สัญญาจะซื้อขนม แต่ต้องกินด้วยกันอย่างเห็นแก่ตัว — รับปะ?",
+            "พี่ให้ช่วยแต่งคอมเมนต์หวานๆ ใต้รูปพี่ — รับปะ?",
+            "พี่ขอให้ช่วยลองแฟชั่นแปลกๆ หน่อย — รับปะ?",
+        ]
+        # make 100 by appending numbered fillers
+        i = 11
+        while len(st.session_state.questions) < 100:
+            st.session_state.questions.append(f"สถานการณ์น่าทดลอง ข้อที่ {i} — รับปะ?")
+            i += 1
+
+    if "round_questions" not in st.session_state:
+        st.session_state.round_questions = []
+    if "q_index" not in st.session_state:
+        st.session_state.q_index = 0
     if "answers" not in st.session_state:
-        # store dicts: [{q, answer, timestamp, timed_out}]
-        st.session_state.answers = []
-    if "play_history" not in st.session_state:
-        st.session_state.play_history = []  # list of rounds
+        st.session_state.answers = []  # list of dicts
+    if "start_time" not in st.session_state:
+        st.session_state.start_time = None
+    if "player" not in st.session_state:
+        st.session_state.player = ""
+    if "model_name" not in st.session_state:
+        st.session_state.model_name = DEFAULT_MODEL
     if "api_key" not in st.session_state:
         st.session_state.api_key = ""
-    if "model_name" not in st.session_state:
-        st.session_state.model_name = "gemini-pro"  # example
-    if "current_question_idx" not in st.session_state:
-        st.session_state.current_question_idx = 0
-    if "question_start_time" not in st.session_state:
-        st.session_state.question_start_time = None
+    if "last_round_score" not in st.session_state:
+        st.session_state.last_round_score = 0
 
-def sample_round(n=10):
-    # sample without replacement from full list
-    qbank = st.session_state.questions
-    return random.sample(qbank, n)
-
-def start_new_round():
-    st.session_state.current_round = sample_round(10)
-    st.session_state.current_question_idx = 0
-    st.session_state.question_start_time = time.time()
-    st.session_state.round_index += 1
-
-def record_answer(question, answer, timed_out=False):
-    st.session_state.answers.append({
-        "question": question,
-        "answer": answer,
-        "timed_out": timed_out,
-        "timestamp": datetime.utcnow().isoformat() + "Z",
-        "round": st.session_state.round_index
-    })
-
-def summarize_df():
-    if not st.session_state.answers:
-        return pd.DataFrame()
-    df = pd.DataFrame(st.session_state.answers)
-    # count choices per question
-    summary = df.groupby(["question", "answer"]).size().unstack(fill_value=0)
-    # add timed_out count
-    timed = df[df["timed_out"] == True].groupby("question").size()
-    summary["timed_out"] = timed
-    summary = summary.fillna(0).astype(int)
-    return summary.reset_index()
-
-# ---------------- UI ----------------
-st.set_page_config(page_title="ถ้าหนูถามพี่จะรับปะ — Game", layout="wide")
 init_session()
 
-# Sidebar: API key, model
-st.sidebar.title("ตั้งค่า API (Google Gemini)")
-api_key_input = st.sidebar.text_input("วาง Google API Key (หรือ ENV)", type="password",
-                                      value=st.session_state.api_key)
-model_input = st.sidebar.text_input("Model name (ตัวอย่าง)", value=st.session_state.model_name)
-st.sidebar.markdown("**หมายเหตุ**: ต้องติดตั้ง `google-generative-ai` หากต้องการเรียก LLM จาก backend.")
+# ----------------- DATABASE (SQLite) -----------------
+def init_db():
+    conn = sqlite3.connect(DB_FILENAME, check_same_thread=False)
+    c = conn.cursor()
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS leaderboard (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        player TEXT,
+        score INTEGER,
+        last_played TEXT
+    )
+    """)
+    conn.commit()
+    return conn
 
-if api_key_input != st.session_state.api_key:
-    st.session_state.api_key = api_key_input
+conn = init_db()
 
-st.session_state.model_name = model_input
+def update_leaderboard(player, score):
+    ts = datetime.utcnow().isoformat() + "Z"
+    c = conn.cursor()
+    # store cumulative: we'll just insert a new row for each play
+    c.execute("INSERT INTO leaderboard (player, score, last_played) VALUES (?, ?, ?)", (player, score, ts))
+    conn.commit()
 
-if HAVE_GENAI and st.session_state.api_key:
+def get_leaderboard_df():
+    df = pd.read_sql_query("SELECT player, SUM(score) as total_score, MAX(last_played) as last_played FROM leaderboard GROUP BY player ORDER BY total_score DESC", conn)
+    return df
+
+# ----------------- HELPERS -----------------
+def new_round():
+    st.session_state.round_questions = random.sample(st.session_state.questions, 10)
+    st.session_state.q_index = 0
+    st.session_state.answers = []
+    st.session_state.start_time = time.time()
+    st.session_state.last_round_score = 0
+
+def record_answer(question, answer, timed_out=False):
+    rec = {
+        "question": question,
+        "answer": answer if answer is not None else "TIMEOUT",
+        "timed_out": bool(timed_out),
+        "timestamp": datetime.utcnow().isoformat() + "Z"
+    }
+    st.session_state.answers.append(rec)
+    # scoring: answered (not timeout) => 1 point
+    if not timed_out and answer is not None:
+        st.session_state.last_round_score += 1
+
+def summary_df_from_answers(answers=None):
+    if answers is None:
+        answers = st.session_state.answers
+    if not answers:
+        return pd.DataFrame()
+    df = pd.DataFrame(answers)
+    # pivot counts
+    cnt = df.groupby(["question", "answer"]).size().unstack(fill_value=0)
+    timed = df[df["timed_out"]==True].groupby("question").size()
+    cnt["timed_out"] = timed
+    cnt = cnt.fillna(0).astype(int)
+    cnt = cnt.reset_index()
+    return cnt
+
+# ----------------- SIDEBAR -----------------
+st.sidebar.header("ตั้งค่า / Import / LLM")
+st.session_state.player = st.sidebar.text_input("ชื่อผู้เล่น (จะเก็บคะแนน)", value=st.session_state.player)
+st.session_state.api_key = st.sidebar.text_input("Google Gemini API Key (optional)", type="password", value=st.session_state.api_key)
+st.session_state.model_name = st.sidebar.text_input("Model name (example)", value=st.session_state.model_name)
+
+st.sidebar.markdown("**นำเข้าคำถาม** (CSV/Excel) — ต้องมีคอลัมน์ `question`")
+uploaded = st.sidebar.file_uploader("อัปโหลดไฟล์คำถาม", type=["csv","xlsx","xls"])
+if uploaded:
     try:
-        genai.configure(api_key=st.session_state.api_key)
-    except Exception as e:
-        st.sidebar.error(f"ไม่สามารถตั้งค่า API key: {e}")
-
-# Top controls
-col1, col2, col3 = st.columns([1,1,2])
-with col1:
-    if st.button("เริ่มรอบใหม่ (สุ่ม 10 ข้อ)"):
-        start_new_round()
-        st.success("เริ่มรอบใหม่แล้ว — ตอบให้ทัน 10 วินาทีต่อข้อ!")
-with col2:
-    if st.button("รีเซ็ตผลทั้งหมด"):
-        st.session_state.answers = []
-        st.session_state.play_history = []
-        st.success("รีเซ็ตข้อมูลเรียบร้อย")
-with col3:
-    st.write(f"รอบที่เล่น: {st.session_state.round_index}")
-
-st.markdown("---")
-
-# Allow user to upload own question bank CSV/Excel
-st.sidebar.markdown("**นำเข้าไฟล์คำถาม (CSV / Excel)**")
-upload = st.sidebar.file_uploader("อัปโหลดไฟล์ (คอลัมน์: question)", type=["csv","xlsx","xls"])
-if upload:
-    try:
-        if upload.name.endswith(".csv"):
-            df_q = pd.read_csv(upload)
+        if uploaded.name.lower().endswith(".csv"):
+            dfq = pd.read_csv(uploaded)
         else:
-            df_q = pd.read_excel(upload)
-        if "question" in df_q.columns:
-            st.session_state.questions = df_q["question"].astype(str).tolist()
-            st.sidebar.success(f"โหลดคำถามจากไฟล์มา {len(st.session_state.questions)} ข้อ")
+            dfq = pd.read_excel(uploaded)
+        if "question" in dfq.columns:
+            st.session_state.questions = dfq["question"].astype(str).tolist()
+            st.sidebar.success(f"โหลดคำถาม {len(st.session_state.questions)} ข้อแล้ว")
+            # save to local CSV
+            pd.DataFrame({"question": st.session_state.questions}).to_csv(QUESTIONS_FILENAME, index=False)
         else:
             st.sidebar.error("ไฟล์ต้องมีคอลัมน์ชื่อ `question`")
     except Exception as e:
-        st.sidebar.error(f"อ่านไฟล์ไม่สำเร็จ: {e}")
+        st.sidebar.error(f"อ่านไฟล์ล้มเหลว: {e}")
 
-# If no current round, offer to start
-if not st.session_state.current_round:
-    st.info("กด 'เริ่มรอบใหม่ (สุ่ม 10 ข้อ)' เพื่อเริ่มเล่น")
-    st.stop()
-
-# Display current question (one at a time)
-idx = st.session_state.current_question_idx
-if idx >= len(st.session_state.current_round):
-    st.success("จบรอบแล้ว — ผลสรุปด้านล่าง")
-    # store round history
-    st.session_state.play_history.append({
-        "round": st.session_state.round_index,
-        "answers": st.session_state.answers[-10:]  # last 10 answers correspond to this round
-    })
-else:
-    question = st.session_state.current_round[idx]
-    st.markdown(f"### ข้อที่ {idx+1}/10")
-    st.markdown(f"**{question}**")
-
-    # show remaining time (server-side approximation)
-    if st.session_state.question_start_time is None:
-        st.session_state.question_start_time = time.time()
-
-    elapsed = time.time() - st.session_state.question_start_time
-    remaining = max(0, 10 - int(elapsed))
-    st.write(f"เวลาเหลือ: **{remaining}** วินาที (ระบบประมาณการ)")
-
-    # Buttons for answers
-    col_a, col_b = st.columns(2)
-    answered_now = False
-    if col_a.button("✅ รับดิ"):
-        # check timeout
-        elapsed = time.time() - st.session_state.question_start_time
-        if elapsed > 10:
-            # timed out
-            record_answer(question, None, timed_out=True)
-            st.warning("ตอบช้า — ข้ามคำถาม (นับเป็น timed out).")
-        else:
-            record_answer(question, "รับดิ", timed_out=False)
-            st.success("เลือก: รับดิ")
-        # move to next question
-        st.session_state.current_question_idx += 1
-        st.session_state.question_start_time = time.time()
-        st.experimental_rerun()
-
-    if col_b.button("❌ ไม่รับดีกว่า"):
-        elapsed = time.time() - st.session_state.question_start_time
-        if elapsed > 10:
-            record_answer(question, None, timed_out=True)
-            st.warning("ตอบช้า — ข้ามคำถาม (n/a).")
-        else:
-            record_answer(question, "ไม่รับดีกว่า", timed_out=False)
-            st.success("เลือก: ไม่รับดีกว่า")
-        st.session_state.current_question_idx += 1
-        st.session_state.question_start_time = time.time()
-        st.experimental_rerun()
-
-    # If time passed and user didn't click (on any rerun), we auto-timeout here
-    # Note: this auto-timeout triggers only when page reruns (e.g., from other button presses or refresh).
-    # For deterministic client-side timeout you'd use a JS component (see notes below).
-    if elapsed > 10:
-        # mark timed out and advance
-        record_answer(question, None, timed_out=True)
-        st.info("หมดเวลา — ข้ามคำถาม (ถูกบันทึกเป็น timed out).")
-        st.session_state.current_question_idx += 1
-        st.session_state.question_start_time = time.time()
-        st.experimental_rerun()
-
-st.markdown("---")
-
-# Show DataFrame summary
-st.subheader("สรุปผล (DataFrame)")
-summary = summarize_df()
-if summary.empty:
-    st.write("ยังไม่มีคำตอบ — เล่นสักรอบแล้วจะเห็นสรุปที่นี่")
-else:
-    st.dataframe(summary)
-
-    # download buttons
-    csv = summary.to_csv(index=False).encode("utf-8")
-    st.download_button("ดาวน์โหลด CSV", data=csv, file_name="summary.csv", mime="text/csv")
-
-    # Excel
-    towrite = io.BytesIO()
-    with pd.ExcelWriter(towrite, engine="xlsxwriter") as writer:
-        summary.to_excel(writer, index=False, sheet_name="summary")
-        writer.save()
-    towrite.seek(0)
-    st.download_button("ดาวน์โหลด Excel", data=towrite, file_name="summary.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-# Option: send aggregated results to LLM (example prompt)
-st.markdown("---")
-st.subheader("วิเคราะห์ผลด้วย LLM (ตัวอย่าง)")
-
-if not HAVE_GENAI:
-    st.info("ถ้าต้องการเรียก Google Gemini ให้ติดตั้ง `google-generative-ai` และให้ใส่ API key ใน sidebar")
-else:
-    if st.button("เรียก LLM สรุปแนวโน้มจากคำตอบล่าสุด"):
-        # Make a prompt that asks LLM to summarize the most popular choices and craft 3 fun insights
-        df_small = summary.copy().head(20).to_dict(orient="records")
+# LLM generate questions (optional)
+if HAVE_GENAI and st.session_state.api_key:
+    try:
+        genai.configure(api_key=st.session_state.api_key)
+    except Exception:
+        st.sidebar.error("ไม่สามารถตั้งค่า API key กับ google.generativeai")
+if st.sidebar.button("ให้ AI สร้างคำถามเพิ่ม (10 ข้อ)"):
+    if not HAVE_GENAI or not st.session_state.api_key:
+        st.sidebar.error("ต้องติดตั้ง google-generativeai และใส่ API key ใน sidebar")
+    else:
+        # Example prompt to generate 10 playful scenario questions in Thai
         prompt = (
-            "ฉันมีสรุปตารางคำถาม-คำตอบ (question + counts of choices). โปรดสรุปใจความสำคัญ 3 ข้อแบบเป็นภาษาไทย "
-            "และให้คำแนะนำเชิงสร้างสรรค์ 3 ข้อสำหรับปรับคำถามให้น่าสนใจขึ้น (short bullets). "
-            f"ตาราง: {df_small}"
+            "สร้างคำถามสถานการณ์สั้นๆ เป็นภาษาไทย จำนวน 10 ข้อ ให้เป็นประโยคเดียวจบ เน้นสนุก ขี้เล่น และลงท้ายด้วย '— รับปะ?' "
+            "ตอบเป็น JSON array ของ strings เท่านั้น"
         )
         try:
-            resp = genai.generate_text(model=st.session_state.model_name, prompt=prompt, max_output_tokens=512)
-            st.markdown("**LLM สรุป:**")
-            st.write(resp.text)
+            resp = genai.generate_text(model=st.session_state.model_name, prompt=prompt, max_output_tokens=800)
+            # naive extraction: try parse lines or eval as list
+            text = resp.text.strip()
+            # attempt to find JSON-like array
+            import json
+            try:
+                arr = json.loads(text)
+            except Exception:
+                # fallback: split by newline and take non-empty lines
+                arr = [line.strip('- ').strip() for line in text.splitlines() if line.strip()]
+            # append to question bank
+            for q in arr:
+                if isinstance(q, str) and q not in st.session_state.questions:
+                    st.session_state.questions.append(q)
+            st.sidebar.success(f"AI สร้างคำถามเพิ่ม {len(arr)} ข้อ (อาจต้องตรวจสอบความสมเหตุสมผล)")
+            # save
+            pd.DataFrame({"question": st.session_state.questions}).to_csv(QUESTIONS_FILENAME, index=False)
         except Exception as e:
-            st.error(f"เรียก LLM ไม่สำเร็จ: {e}")
+            st.sidebar.error(f"สร้างคำถามด้วย LLM ล้มเหลว: {e}")
+
+# export questions
+if st.sidebar.button("ดาวน์โหลดคำถามปัจจุบัน (CSV)"):
+    dfq = pd.DataFrame({"question": st.session_state.questions})
+    csv = dfq.to_csv(index=False).encode("utf-8")
+    st.sidebar.download_button("Download questions.csv", csv, "questions.csv", "text/csv")
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("**ข้อมูล**")
+st.sidebar.write(f"คำถามทั้งหมด: {len(st.session_state.questions)}")
+st.sidebar.write("โปรดทราบ: Timer เป็นแบบ server-side (ถ้าไม่กดอะไรและไม่มี rerun จะถือว่ารออยู่).")
+
+# ----------------- MAIN UI -----------------
+col_left, col_right = st.columns([2,1])
+
+with col_left:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    if st.button("เริ่มรอบใหม่ (สุ่ม 10 ข้อ)", key="newround"):
+        new_round()
+        st.experimental_rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    if not st.session_state.round_questions:
+        st.info("กด 'เริ่มรอบใหม่' เพื่อเล่น (ระบบจะสุ่ม 10 ข้อให้)")
+    else:
+        # show progress
+        total = 10
+        idx = st.session_state.q_index
+        st.progress(min(1.0, idx / total))
+        # current question
+        if idx >= total:
+            st.success("🎉 จบรอบแล้ว — ดูสรุปและบันทึกคะแนนด้านล่าง")
+        else:
+            q = st.session_state.round_questions[idx]
+            st.markdown(f'<div class="question-box"><h4>คำถามข้อที่ {idx+1}/{total}</h4><p style="font-size:18px;"><b>{q}</b></p></div>', unsafe_allow_html=True)
+
+            # start time logic
+            if st.session_state.start_time is None:
+                st.session_state.start_time = time.time()
+            elapsed = time.time() - st.session_state.start_time
+            remaining = max(0, 10 - int(elapsed))
+            st.write(f"⏳ เวลาเหลือ (ประมาณ): **{remaining}** วินาที")
+            st.write('<div class="small-muted">หมายเหตุ: ถ้ากดตอบหลังเวลา จะถูกบันทึกเป็น timeout</div>', unsafe_allow_html=True)
+
+            # answer buttons
+            a1, a2 = st.columns(2)
+            if a1.button("✅ รับดิ"):
+                # check timeout
+                if elapsed > 10:
+                    record_answer(q, None, timed_out=True)
+                    st.warning("ตอบช้า — บันทึกเป็น TIMEOUT (0 คะแนน)")
+                else:
+                    record_answer(q, "รับดิ", timed_out=False)
+                    st.success("บันทึก: รับดิ (+1 คะแนน)")
+                # prepare next
+                st.session_state.q_index += 1
+                st.session_state.start_time = time.time()
+                st.experimental_rerun()
+            if a2.button("❌ ไม่รับดีกว่า"):
+                if elapsed > 10:
+                    record_answer(q, None, timed_out=True)
+                    st.warning("ตอบช้า — บันทึกเป็น TIMEOUT (0 คะแนน)")
+                else:
+                    record_answer(q, "ไม่รับดีกว่า", timed_out=False)
+                    st.success("บันทึก: ไม่รับดีกว่า (+1 คะแนน)")
+                st.session_state.q_index += 1
+                st.session_state.start_time = time.time()
+                st.experimental_rerun()
+
+            # server-side timeout detection on rerun
+            if elapsed > 10:
+                record_answer(q, None, timed_out=True)
+                st.info("หมดเวลา → ข้ามข้อนี้ (บันทึก TIMEOUT)")
+                st.session_state.q_index += 1
+                st.session_state.start_time = time.time()
+                st.experimental_rerun()
+
+with col_right:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.subheader("🏅 Leaderboard & Score")
+    if st.session_state.player:
+        st.write(f"ผู้เล่น: **{st.session_state.player}**")
+    else:
+        st.info("กรอกชื่อผู้เล่นใน sidebar เพื่อบันทึกคะแนน")
+    st.write(f"คะแนนรอบนี้ (ปัจจุบัน): **{st.session_state.last_round_score}**")
+    if st.button("บันทึกคะแนนรอบนี้"):
+        if not st.session_state.player:
+            st.warning("กรุณากรอกชื่อผู้เล่นใน sidebar ก่อนบันทึก")
+        else:
+            update_leaderboard(st.session_state.player, st.session_state.last_round_score)
+            st.success(f"บันทึกแล้ว: {st.session_state.player} +{st.session_state.last_round_score} คะแนน")
+    st.markdown("**ตารางรวมคะแนน**")
+    df_lb = get_leaderboard_df()
+    if df_lb.empty:
+        st.write("ยังไม่มีคะแนน")
+    else:
+        st.dataframe(df_lb)
+
+    st.markdown("</div>", unsafe_allow_html=True)
 
 st.markdown("---")
-st.caption("App ตัวอย่าง — ปรับแต่งคำถาม/UX/การเรียก LLM ให้เหมาะสมกับ assignment ได้ตามต้องการ.")
+st.subheader("📊 สรุปผลการตอบและดาวน์โหลด")
+
+# if round finished, show summary and allow export
+if st.session_state.answers:
+    df_summary = summary_df_from_answers()
+    st.dataframe(df_summary)
+
+    # download summary CSV
+    csv = df_summary.to_csv(index=False).encode("utf-8")
+    st.download_button("ดาวน์โหลดสรุป (CSV)", csv, "summary.csv", "text/csv")
+    # excel
+    towrite = io.BytesIO()
+    with pd.ExcelWriter(towrite, engine="xlsxwriter") as writer:
+        df_summary.to_excel(writer, index=False, sheet_name="summary")
+        writer.save()
+    towrite.seek(0)
+    st.download_button("ดาวน์โหลดสรุป (Excel)", towrite, "summary.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+else:
+    st.write("ยังไม่มีคำตอบในรอบนี้ — เริ่มรอบแล้วตอบคำถามเพื่อเห็นสรุป")
+
+# quick export of full question bank
+st.markdown("---")
+st.subheader("🗂️ ข้อมูลคำถาม (Question Bank)")
+st.write(f"จำนวนคำถามทั้งหมด: {len(st.session_state.questions)}")
+if st.button("บันทึกคำถามลงไฟล์ (questions_bank.csv)"):
+    pd.DataFrame({"question": st.session_state.questions}).to_csv(QUESTIONS_FILENAME, index=False)
+    st.success(f"บันทึกแล้ว: {QUESTIONS_FILENAME}")
+if os.path.exists(QUESTIONS_FILENAME):
+    with open(QUESTIONS_FILENAME, "rb") as f:
+        st.download_button("ดาวน์โหลด questions_bank.csv", f.read(), file_name=QUESTIONS_FILENAME, mime="text/csv")
+
+st.markdown("---")
+st.caption("App นี้ออกแบบมาให้ใช้งานได้ทันทีสำหรับ assignment — Python only, Streamlit-based, มี LLM integration แบบ optional, และมี leaderboard เก็บคะแนน")
+
+# ----------------- CLEANUP / NOTES -----------------
+st.markdown("""  
+**หมายเหตุสำคัญเกี่ยวกับ Timer / UX (Python-only)**  
+- Streamlit ใช้การ rerun เป็นหลัก — ถ้าผู้เล่นไม่กดอะไรเลย ระบบจะไม่สามารถ 'เปลี่ยนหน้า' อัตโนมัติโดยไม่มีการ rerun.  
+- โค้ดนี้ใช้แนวปฏิบัติ common สำหรับ assignment: ถ้ากดตอบหลัง 10 วินาที จะถูกบันทึกเป็น TIMEOUT.  
+""")

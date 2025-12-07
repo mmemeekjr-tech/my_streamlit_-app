@@ -780,4 +780,31 @@ if st.session_state.openai_key or (st.session_state.gemini_key and HAVE_GENAI):
 else:
     st.info("กรอก OpenAI API Key หรือ Google Gemini API Key ใน sidebar ถ้าต้องการให้ AI วิเคราะห์")
 
+st.markdown("**ผลวิเคราะห์ (Gemini):**")
+st.write(out)
+
+# 🎉 ข้อความขอบคุณธีมน้ำเงิน-ดำ-เทา
+st.markdown("""
+<hr>
+
+<div style="
+    background: linear-gradient(135deg, #0d1117, #1b2735);
+    padding: 20px;
+    border-radius: 14px;
+    text-align: center;
+    font-size: 18px;
+    border: 1px solid #2d3a4a;
+    color: #d6e2f0;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+">
+ **ขอบคุณที่มาเล่นนะ!**  
+หวังว่าการวิเคราะห์นี้จะช่วยให้สนุกและเห็นมุมมองใหม่ ๆ 
+</div>
+
+<hr>
+""", unsafe_allow_html=True)
+
+
+
+
 # end

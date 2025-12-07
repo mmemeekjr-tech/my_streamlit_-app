@@ -717,9 +717,36 @@ if st.session_state.openai_key or (st.session_state.gemini_key and HAVE_GENAI):
                 else:
                     st.warning("ไม่พบโมเดล Gemini ที่รองรับจากไลบรารี — ตรวจสอบ API key หรือเวอร์ชันของไลบรารี")
 
-                model = genai.GenerativeModel(st.session_state.model_name)
-                resp = model.generate_content(prompt)
-                out = getattr(resp, "text", None) or str(resp)
+                # v0.8.5 style: use genai.generate_text(...) and handle different response shapes
+                try:
+                    resp = genai.generate_text(model=st.session_state.model_name, prompt=prompt, max_output_tokens=500)
+                except TypeError:
+                    # older variants may use different parameter names
+                    resp = genai.generate_text(model=st.session_state.model_name, prompt=prompt)
+
+                out = None
+                # common shapes: object with .text, dict with 'candidates', or object with .candidates
+                if hasattr(resp, "text"):
+                    out = resp.text
+                elif isinstance(resp, dict):
+                    if "candidates" in resp and resp["candidates"]:
+                        c0 = resp["candidates"][0]
+                        out = c0.get("content") or c0.get("text") or str(c0)
+                    elif "outputs" in resp and resp["outputs"]:
+                        o0 = resp["outputs"][0]
+                        out = o0.get("content") or o0.get("text") or str(o0)
+                else:
+                    # object-like with candidates attribute
+                    try:
+                        if hasattr(resp, "candidates") and resp.candidates:
+                            c0 = resp.candidates[0]
+                            out = getattr(c0, "content", None) or getattr(c0, "text", None) or str(c0)
+                    except Exception:
+                        out = None
+
+                if not out:
+                    out = str(resp)
+
                 st.markdown("**ผลวิเคราะห์ (Gemini):**")
                 st.write(out)
             except Exception as e:

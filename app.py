@@ -324,3 +324,8 @@ if upload is not None:
         if "question" in dfq.columns:
             st.session_state.questions = dfq["question"].astype(str).tolist()
             dfq.to_csv(QUESTIONS_FILENAME, index=False)
+            st.sidebar.success("นำเข้าคำถามสำเร็จ!")
+        else:
+            st.sidebar.error("ไฟล์ต้องมีคอลัมน์ 'question'")
+    except Exception as e:
+        st.sidebar.error(f"เกิดข้อผิดพลาดในการนำเข้า: {e}")

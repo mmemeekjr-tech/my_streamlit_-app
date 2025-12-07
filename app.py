@@ -231,64 +231,75 @@ except Exception:
 
 
 def list_gemini_models():
-    """Return usable Gemini model names for all current google.generativeai versions."""
+    """Return ONLY models that support generateContent for google.generativeai >= 0.8.5."""
     if not HAVE_GENAI:
         return []
 
-    # new API uses genai.list_models()
+    usable = []
+
     try:
         models = genai.list_models()
-        names = []
         for m in models:
-            # m can be Model object or dict
+            # get model name
             name = getattr(m, "name", None)
             if not name and isinstance(m, dict):
                 name = m.get("name") or m.get("model") or m.get("id")
-            if name:
-                names.append(name)
-        if names:
-            return names
-    except:
+
+            if not name:
+                continue
+
+            # filter only models that support generateContent
+            supported = getattr(m, "supported_generation_methods", None)
+            if supported and "generateContent" in supported:
+                usable.append(name)
+
+        # if we found valid models
+        if usable:
+            return usable
+
+    except Exception:
         pass
 
-    # fallback static list (most stable)
+    # fallback (safe defaults)
     return [
-        "gemini-1.5-flash",
-        "gemini-1.5-pro",
-        "gemini-1.0-pro",
-        "gemini-pro",
+        "models/gemini-2.5-flash",
+        "models/gemini-2.5-pro",
     ]
 
 
 def generate_with_genai(model_name, prompt):
-    """Unified safe call for all google.generativeai versions."""
+    """Unified safe call for google.generativeai 0.8.5+."""
     if not HAVE_GENAI:
         raise RuntimeError("Gemini not available")
 
-    # new API (2024–2025)
-    # genai.GenerativeModel("model").generate_content(...)
+    if not model_name:
+        # Safe fallback model
+        model_name = "models/gemini-2.5-flash"
+
+    # New API (0.8.0+)
     try:
         Model = getattr(genai, "GenerativeModel", None)
         if callable(Model):
             gm = Model(model_name)
+
             if hasattr(gm, "generate_content"):
                 return gm.generate_content(prompt)
-            elif hasattr(gm, "generate"):
+
+            if hasattr(gm, "generate"):  # very old alternative
                 return gm.generate(prompt)
     except Exception as e:
         last_error = e
 
-    # old API (legacy)
+    # Very old API fallback (not used in 0.8.5)
     try:
-        if hasattr(genai, "generate_text"):
-            return genai.generate_text(model=model_name, prompt=prompt)
         if hasattr(genai, "generate_content"):
             return genai.generate_content(model=model_name, prompt=prompt)
+        if hasattr(genai, "generate_text"):
+            return genai.generate_text(model=model_name, prompt=prompt)
     except Exception as e:
         last_error = e
 
     raise last_error
-
 
 # ----------------- DATABASE (SQLite) -----------------
 def init_db():

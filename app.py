@@ -222,148 +222,73 @@ def init_session():
 
 init_session()
 
-def list_gemini_models():
-    """Try several genai listing helpers and return a list of model names (best-effort).
+# ----------------- FIXED: Gemini (google.generativeai) -----------------
+try:
+    import google.generativeai as genai
+    HAVE_GENAI = True
+except Exception:
+    HAVE_GENAI = False
 
-    The google.generativeai package exposes different listing helpers across versions,
-    so this function tries a few options and normalizes results.
-    """
+
+def list_gemini_models():
+    """Return usable Gemini model names for all current google.generativeai versions."""
     if not HAVE_GENAI:
         return []
-    names = []
-    # Try genai.list_models()
+
+    # new API uses genai.list_models()
     try:
-        resp = genai.list_models()
-        if isinstance(resp, dict) and "models" in resp:
-            for m in resp["models"]:
-                if isinstance(m, dict):
-                    names.append(m.get("name") or m.get("model") or m.get("id"))
-                else:
-                    names.append(str(m))
-        elif isinstance(resp, list):
-            for m in resp:
-                if isinstance(m, dict):
-                    names.append(m.get("name") or m.get("model") or m.get("id"))
-                else:
-                    names.append(str(m))
+        models = genai.list_models()
+        names = []
+        for m in models:
+            # m can be Model object or dict
+            name = getattr(m, "name", None)
+            if not name and isinstance(m, dict):
+                name = m.get("name") or m.get("model") or m.get("id")
+            if name:
+                names.append(name)
         if names:
-            return [n for n in names if n]
-    except Exception:
+            return names
+    except:
         pass
 
-    # Try genai.get_models()
-    try:
-        resp = genai.get_models()
-        if isinstance(resp, dict) and "models" in resp:
-            for m in resp["models"]:
-                if isinstance(m, dict):
-                    names.append(m.get("name") or m.get("model") or m.get("id"))
-                else:
-                    names.append(str(m))
-        if names:
-            return [n for n in names if n]
-    except Exception:
-        pass
-
-    # Try genai.models.list() which some versions provide
-    try:
-        resp = genai.models.list()
-        # resp may have .data or be a list
-        if hasattr(resp, "data"):
-            for m in resp.data:
-                # m may be an object with .name
-                name = getattr(m, "name", None) or getattr(m, "id", None)
-                if name:
-                    names.append(name)
-        elif isinstance(resp, list):
-            for m in resp:
-                if hasattr(m, "name"):
-                    names.append(m.name)
-                elif isinstance(m, dict):
-                    names.append(m.get("name") or m.get("id"))
-        if names:
-            return [n for n in names if n]
-    except Exception:
-        pass
-
-    return []
+    # fallback static list (most stable)
+    return [
+        "gemini-1.5-flash",
+        "gemini-1.5-pro",
+        "gemini-1.0-pro",
+        "gemini-pro",
+    ]
 
 
 def generate_with_genai(model_name, prompt):
-    """Call google.generativeai using several supported call patterns (best-effort).
+    """Unified safe call for all google.generativeai versions."""
+    if not HAVE_GENAI:
+        raise RuntimeError("Gemini not available")
 
-    Returns the raw response object from the successful call, or raises the last exception.
-    """
-    last_exc = None
+    # new API (2024–2025)
+    # genai.GenerativeModel("model").generate_content(...)
+    try:
+        Model = getattr(genai, "GenerativeModel", None)
+        if callable(Model):
+            gm = Model(model_name)
+            if hasattr(gm, "generate_content"):
+                return gm.generate_content(prompt)
+            elif hasattr(gm, "generate"):
+                return gm.generate(prompt)
+    except Exception as e:
+        last_error = e
 
-    # 1) module-level generate_content / generate_text (prefer generate_content)
-    gen_content = getattr(genai, "generate_content", None)
-    if callable(gen_content):
-        try:
-            return gen_content(model=model_name, prompt=prompt, max_output_tokens=500)
-        except TypeError:
-            try:
-                return gen_content(model=model_name, prompt=prompt)
-            except Exception as e:
-                last_exc = e
-        except Exception as e:
-            last_exc = e
+    # old API (legacy)
+    try:
+        if hasattr(genai, "generate_text"):
+            return genai.generate_text(model=model_name, prompt=prompt)
+        if hasattr(genai, "generate_content"):
+            return genai.generate_content(model=model_name, prompt=prompt)
+    except Exception as e:
+        last_error = e
 
-    gen_text = getattr(genai, "generate_text", None)
-    if callable(gen_text):
-        try:
-            return gen_text(model=model_name, prompt=prompt, max_output_tokens=500)
-        except TypeError:
-            try:
-                return gen_text(model=model_name, prompt=prompt)
-            except Exception as e:
-                last_exc = e
-        except Exception as e:
-            last_exc = e
+    raise last_error
 
-    # 2) genai.models.<method>
-    models_ns = getattr(genai, "models", None)
-    if models_ns is not None:
-        for meth in ("generate_content", "generate_text", "generate", "create"):
-            fn = getattr(models_ns, meth, None)
-            if callable(fn):
-                try:
-                    return fn(model=model_name, prompt=prompt, max_output_tokens=500)
-                except TypeError:
-                    try:
-                        return fn(model=model_name, prompt=prompt)
-                    except Exception as e:
-                        last_exc = e
-                except Exception as e:
-                    last_exc = e
-
-    # 3) genai.GenerativeModel(...) instance methods (some versions)
-    GenModel = getattr(genai, "GenerativeModel", None)
-    if callable(GenModel):
-        try:
-            gm = GenModel(model_name)
-            for meth in ("generate_content", "generate_text", "generate"):
-                fn = getattr(gm, meth, None)
-                if callable(fn):
-                    try:
-                        return fn(prompt)
-                    except Exception as e:
-                        last_exc = e
-        except Exception as e:
-            last_exc = e
-
-    # 4) fallback: try genai.generate if present
-    gen_fallback = getattr(genai, "generate", None)
-    if callable(gen_fallback):
-        try:
-            return gen_fallback(model=model_name, prompt=prompt)
-        except Exception as e:
-            last_exc = e
-
-    # If we reach here nothing worked
-    if last_exc:
-        raise last_exc
-    raise RuntimeError("No supported generation method found on google.generativeai module")
 
 # ----------------- DATABASE (SQLite) -----------------
 def init_db():
@@ -481,7 +406,7 @@ def personality_tier(stats):
         return ("ยังไม่มีข้อมูล", "ตอบน้อยไป — ลองเล่นสักรอบก่อนนะ!")
     pct_yes = (stats["ได้ดิ"] / total_answered) * 100
     if pct_yes >= 70:
-        return ("🔥 กล้าเสี่ยง (Risk-taker)", "คุณค่อนข้างกล้า 'ได้ดิ' บ่อย — เปิดใจลองสิ่งใหม่ๆ เยอะ")
+        return ("🔥 กล้าเสี่ยง (Risk-taker)", "คุณค่อนข้างใจกล้าเลยนะเนี่ย 'ได้ดิ' บ่อย — เปิดใจลองสิ่งใหม่ ๆ เยอะ")
     if pct_yes >= 40:
         return ("⚖️ กลางๆ (Balanced)", "มีทั้งได้และไม่ ได้ — เป็นคนพิจารณาก่อนตัดสินใจ")
     return ("🛡️ ระมัดระวัง (Cautious)", "มักตอบ 'อาจจะยัง' หรือหมดเวลา — ระวังและคิดรอบคอบ")
@@ -827,7 +752,20 @@ if st.session_state.openai_key or (st.session_state.gemini_key and HAVE_GENAI):
                 st.markdown("**ผลวิเคราะห์ (Gemini):**")
                 st.write(out)
             except Exception as e:
-                st.error(f"Gemini วิเคราะห์ไม่ได้: {e}")
+                err = str(e)
+                # Common error when model name format is invalid from the API
+                if "unexpected model name format" in err or "GenerateContentRequest.model" in err or "unexpected model name" in err:
+                    available = list_gemini_models()
+                    if available:
+                        st.error(f"Gemini วิเคราะห์ไม่ได้: {err}")
+                        st.info("รายการโมเดลที่พบจาก Gemini API (เลือกรายการที่เหมาะสมใน sidebar หรือกด Refresh):")
+                        for m in available:
+                            st.write(f"- {m}")
+                    else:
+                        st.error(f"Gemini วิเคราะห์ไม่ได้: {err} — ไม่พบโมเดลที่รองรับจากไลบรารี")
+                        st.info("ตรวจสอบว่า API key ถูกต้อง และไลบรารี `google-generativeai` เป็นเวอร์ชันที่รองรับการเรียก ListModels")
+                else:
+                    st.error(f"Gemini วิเคราะห์ไม่ได้: {e}")
         else:
             st.error("ไม่มี LLM ที่ใช้งานได้ — กรุณาใส่ OpenAI หรือ Gemini API key")
 else:

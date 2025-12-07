@@ -628,7 +628,7 @@ if st.session_state.openai_key or (st.session_state.gemini_key and HAVE_GENAI):
                 import openai
                 openai.api_key = st.session_state.openai_key
                 resp = openai.ChatCompletion.create(
-                    model="gpt-4o-mini",
+                    model="gpt-4.1-mini",
                     messages=[{"role":"user","content":prompt}],
                     max_tokens=400
                 )

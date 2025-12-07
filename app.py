@@ -1,13 +1,6 @@
 # Sentiment + Emotion Dashboard (Streamlit)
-# Features:
-# - Accepts Thai and English input (text area or CSV/XLSX upload)
-# - Sidebar for API keys (OpenAI and Google Gemini)
-# - Option to choose backend LLM (openai or gemini)
-# - Button "Enter" to start processing
-# - Uses LLM to classify sentiment (pos/neg/neu) and emotion (joy, anger, sadness, neutral, etc.)
-# - Shows English results with Thai translations in parentheses
-# - Displays pandas DataFrame, allows download and plots (bar & pie)
-# - Includes short explanations from LLM
+# Updated: numbering from 1, improved OpenAI wrapper (new/legacy SDK support), stricter prompt,
+# better parsing & retry logic, fixes for chart generation, and clearer error reporting.
 
 import streamlit as st
 import pandas as pd
@@ -21,11 +14,20 @@ import matplotlib.pyplot as plt
 from collections import Counter
 
 # Optional: import openai if available
+OPENAI_INSTALLED = False
 try:
     import openai
     OPENAI_INSTALLED = True
 except Exception:
-    OPENAI_INSTALLED = False
+    try:
+        # Some environments use the newer OpenAI client package
+        from openai import OpenAI as OpenAIClient
+        OPENAI_INSTALLED = True
+        openai = None
+        OpenAIClientAvailable = True
+    except Exception:
+        OpenAIClientAvailable = False
+        OPENAI_INSTALLED = False
 
 # -----------------------------
 # Utility functions
@@ -33,7 +35,7 @@ except Exception:
 
 def translate_label_to_th(label: str) -> str:
     """Simple translations for sentiment/emotion labels to Thai."""
-    s = label.lower()
+    s = str(label).lower()
     mapping = {
         'positive': 'บวก',
         'negative': 'ลบ',
@@ -53,6 +55,8 @@ def translate_label_to_th(label: str) -> str:
 
 def safe_parse_json(s: str) -> Any:
     # Try direct json loads, otherwise try to extract a json-looking substring.
+    if not isinstance(s, str):
+        return None
     try:
         return json.loads(s)
     except Exception:
@@ -65,44 +69,75 @@ def safe_parse_json(s: str) -> Any:
             return None
 
 # -----------------------------
-# LLM wrappers (OpenAI & Gemini placeholders)
+# Improved prompt and LLM wrappers
 # -----------------------------
 
 def build_prompt_for_single(text: str) -> str:
-    """Prompt asks the model to return a JSON with fields:
-       sentiment (positive/negative/neutral),
-       emotion (choose one or more from joy, anger, sadness, fear, surprise, disgust, neutral),
-       explanation: short reason in English and Thai separately.
+    """Stricter prompt asking for EXACT JSON schema.
+
+    We instruct the model to ALWAYS respond with only JSON and show a short example.
     """
-    p = f"""
-You are an assistant that reads a single short user text (can be Thai or English) and outputs a JSON only, with these fields:
-- sentiment: one of [positive, negative, neutral]
-- emotion: one or more emotions from [joy, anger, sadness, fear, surprise, disgust, neutral]
-- explanation_en: a short (1-2 sentence) explanation in English why you chose the sentiment/emotion
-- explanation_th: the same explanation in Thai
-
-Return STRICT JSON only, with keys exactly as above. Do not return any extra text.
-
-User text: """ + text + """
-"""
-    return p
+    schema = {
+        "sentiment": "one of [positive, negative, neutral]",
+        "emotion": "one or more from [joy, anger, sadness, fear, surprise, disgust, neutral] (as a list)",
+        "explanation_en": "short 1-2 sentence explanation in English",
+        "explanation_th": "short 1-2 sentence translation in Thai"
+    }
+    prompt = (
+        "You are a JSON-only responder. Given the following user text (which may be Thai or English), "
+        "return a STRICT JSON object with these keys exactly: sentiment, emotion, explanation_en, explanation_th.\n"
+        "- sentiment: one of [positive, negative, neutral]\n"
+        "- emotion: a JSON list (even if one item) chosen from [joy, anger, sadness, fear, surprise, disgust, neutral]\n"
+        "- explanation_en: 1-2 short sentences in English explaining the choice\n"
+        "- explanation_th: same explanation translated into Thai\n\n"
+        "Return ONLY the JSON object and nothing else. Example output format:\n"
+        "{" + '\"sentiment\": \"positive\", \"emotion\": [\"joy\"], \"explanation_en\": \"Because...\", \"explanation_th\": \"เพราะ...\"}\n'
+        "User text:\n" + text + "\n"
+    )
+    return prompt
 
 
 def call_openai_chat_completion(api_key: str, prompt: str, model: str = 'gpt-4o-mini') -> str:
-    """Call OpenAI ChatCompletion. Requires openai package and API key.
-       This function is a best-effort example and may need adjustment depending on the OpenAI SDK version.
+    """Try to support both new and legacy openai client styles.
+
+    New style (openai>=1.0):
+      from openai import OpenAI
+      client = OpenAI(api_key=...)
+      r = client.chat.completions.create(model=model, messages=[{"role":"user","content":prompt}], temperature=0)
+
+    Legacy style:
+      import openai
+      openai.api_key=...
+      r = openai.ChatCompletion.create(...)
+
+    This wrapper attempts new client first, then falls back.
     """
-    if not OPENAI_INSTALLED:
-        raise RuntimeError("openai package not installed")
-    openai.api_key = api_key
-    # We'll use the chat completions interface (older/newer kits may differ)
-    messages = [{"role": "user", "content": prompt}]
-    resp = openai.ChatCompletion.create(model=model, messages=messages, temperature=0)
-    # extract text
+    # First try newer OpenAI client if available
     try:
-        return resp['choices'][0]['message']['content']
-    except Exception:
-        return str(resp)
+        # New client
+        if 'OpenAIClient' in globals() and OpenAIClientAvailable:
+            client = OpenAIClient(api_key=api_key)
+            r = client.chat.completions.create(model=model, messages=[{"role": "user", "content": prompt}], temperature=0)
+            # response text extraction depends on model - try common paths
+            if isinstance(r, dict) and r.get('choices'):
+                return r['choices'][0]['message']['content']
+            # Some client objects return objects with attributes
+            try:
+                return r.choices[0].message.content
+            except Exception:
+                return str(r)
+
+        # Fallback legacy
+        if OPENAI_INSTALLED and openai is not None:
+            openai.api_key = api_key
+            r = openai.ChatCompletion.create(model=model, messages=[{"role": "user", "content": prompt}], temperature=0)
+            return r['choices'][0]['message']['content']
+
+    except Exception as e:
+        # surface error for debugging
+        raise RuntimeError(f"OpenAI call failed: {e}")
+
+    raise RuntimeError("No compatible OpenAI client available in this environment. Install openai or provide a compatible client.")
 
 
 def call_gemini_placeholder(api_key: str, prompt: str, model: str = 'gemini-pro') -> str:
@@ -113,9 +148,11 @@ def call_gemini_placeholder(api_key: str, prompt: str, model: str = 'gemini-pro'
 
        For now this function raises NotImplementedError so students know to implement it for their environment.
     """
-    raise NotImplementedError("Please implement call_gemini_placeholder() with your project's Gemini call.\n"
-                              "Typical approach: use google-auth to create credentials, then call the models.generate endpoint\n"
-                              "and return the text result. See Google's official docs for the current client usage.")
+raise NotImplementedError(
+    "Please implement call_gemini_placeholder() with your project's Gemini call. "
+    "Typical approach: use google-auth to create credentials, then call the models.generate endpoint "
+    "and return the text result. See Google's official docs for the current client usage."
+)
 
 # -----------------------------
 # Streamlit UI
@@ -144,14 +181,14 @@ with col1:
     uploaded_file = st.file_uploader("Upload CSV or Excel (optional)", type=['csv','xlsx','xls'])
     text_input = st.text_area("Or paste / type text (one review per line)", height=200)
     # Provide an example
-    if st.checkbox("Use example data"):
-        example_texts = [
-            "I love this product! It's fantastic and arrived quickly.",
-            "แย่มาก ใช้ไม่ได้เลย เสียเวลาและเงิน", 
-            "The food was okay, not great but not bad either.",
-            "บริการดี แต่ราคาสูงเกินไป"
-        ]
-        text_input = "\n".join(example_texts)
+if st.checkbox("Use example data"):
+    example_texts = [
+        "I love this product! It's fantastic and arrived quickly.",
+        "แย่มาก ใช้ไม่ได้เลย เสียเวลาและเงิน", 
+        "The food was okay, not great but not bad either.",
+        "บริการดี แต่ราคาสูงเกินไป"
+    ]
+    text_input = "\n".join(example_texts)
 
 with col2:
     st.write("Config")
@@ -217,30 +254,40 @@ if start_processing:
         st.write(f"Processing {n} texts with backend: {backend}")
         progress = st.progress(0)
         results = []
-        batch_size = 8
+        # Process sequentially; you can batch or parallelize for speed later
         for i, txt in enumerate(texts):
             try:
                 prompt = build_prompt_for_single(txt)
-                if backend == 'openai':
-                    if not OPENAI_INSTALLED:
-                        raise RuntimeError("openai package not installed in this environment. Install it or choose Gemini backend.")
-                    raw = call_openai_chat_completion(openai_key, prompt, model=model_choice)
-                else:
-                    # Gemini path - student should implement call_gemini_placeholder
-                    raw = call_gemini_placeholder(gemini_key, prompt, model=model_choice)
+                raw = None
+                # Try up to 2 attempts for transient errors
+                last_err = None
+                for attempt in range(2):
+                    try:
+                        if backend == 'openai':
+                            raw = call_openai_chat_completion(openai_key, prompt, model=model_choice)
+                        else:
+                            raw = call_gemini_placeholder(gemini_key, prompt, model=model_choice)
+                        break
+                    except NotImplementedError as nie:
+                        raise
+                    except Exception as e:
+                        last_err = e
+                        time.sleep(0.3)
+                if raw is None:
+                    raise RuntimeError(f"LLM call failed after retries: {last_err}")
 
                 parsed = safe_parse_json(raw)
                 if parsed is None:
                     # fallback: attempt to heuristically read lines
                     parsed = {}
                     parsed['sentiment'] = 'neutral'
-                    parsed['emotion'] = 'neutral'
-                    parsed['explanation_en'] = raw[:200]
+                    parsed['emotion'] = ['neutral']
+                    parsed['explanation_en'] = f"LLM returned non-JSON response: {str(raw)[:200]}"
                     parsed['explanation_th'] = ''
 
                 # normalize fields
                 sentiment = parsed.get('sentiment') if isinstance(parsed.get('sentiment'), str) else str(parsed.get('sentiment'))
-                emotion = parsed.get('emotion') if isinstance(parsed.get('emotion'), (str, list)) else str(parsed.get('emotion'))
+                emotion = parsed.get('emotion') if isinstance(parsed.get('emotion'), (list, str)) else str(parsed.get('emotion'))
                 explanation_en = parsed.get('explanation_en', '')
                 explanation_th = parsed.get('explanation_th', '')
 
@@ -249,21 +296,24 @@ if start_processing:
                 st.stop()
             except Exception as e:
                 sentiment = 'neutral'
-                emotion = 'neutral'
+                emotion = ['neutral']
                 explanation_en = f"LLM error: {e}"
                 explanation_th = ''
 
-            # ensure string
+            # ensure list for emotion
             if isinstance(emotion, list):
-                emotion_str = ", ".join(emotion)
+                emotion_list = [str(x).strip() for x in emotion if str(x).strip()]
             else:
-                emotion_str = str(emotion)
+                emotion_list = [p.strip() for p in str(emotion).split(',') if p.strip()]
+
+            emotion_str = ", ".join(emotion_list)
 
             # Thai translations in parentheses
             sentiment_th = translate_label_to_th(sentiment)
-            emotion_th = ", ".join([translate_label_to_th(e.strip()) or '' for e in emotion_str.split(',')]).strip()
+            emotion_th = ", ".join([translate_label_to_th(e.strip()) or '' for e in emotion_list]).strip()
 
             results.append({
+                'id': i+1,
                 'text': txt,
                 'sentiment_en': sentiment,
                 'sentiment_th': f"({sentiment_th})" if sentiment_th else '',
@@ -275,10 +325,13 @@ if start_processing:
 
             # update progress
             progress.progress(math.floor((i+1)/n*100))
-            # optional small sleep so UI updates smoothly when testing with few items
-            time.sleep(0.05)
+            # optional small sleep so UI updates smoothly
+            time.sleep(0.03)
 
         df_out = pd.DataFrame(results)
+        # Reorder columns for nicer display
+        cols_order = ['id','text','sentiment_en','sentiment_th','emotion_en','emotion_th','explanation_en','explanation_th']
+        df_out = df_out[cols_order]
 
         st.subheader("Results")
         st.dataframe(df_out)
@@ -310,9 +363,12 @@ if start_processing:
         with st.expander("Charts"):
             # sentiment counts
             sent_counts = Counter(df_out['sentiment_en'].fillna('neutral').tolist())
-            sent_items = list(sent_counts.items())
-            labels_sent = [f"{k} ({translate_label_to_th(k)})" for k,_ in sent_items]
-            values_sent = [v for _,v in sent_items]
+            # Ensure consistent order: positive, neutral, negative if present
+            ordered_keys = [k for k in ['positive','neutral','negative'] if k in sent_counts]
+            other_keys = [k for k in sent_counts.keys() if k not in ordered_keys]
+            final_keys = ordered_keys + other_keys
+            labels_sent = [f"{k} ({translate_label_to_th(k)})" for k in final_keys]
+            values_sent = [sent_counts[k] for k in final_keys]
 
             fig1, ax1 = plt.subplots()
             ax1.bar(labels_sent, values_sent)
@@ -331,8 +387,10 @@ if start_processing:
                         all_emotions.append(ep)
             emo_counts = Counter(all_emotions)
             if emo_counts:
-                labels_emo = [f"{k} ({translate_label_to_th(k)})" for k,_ in emo_counts.items()]
-                values_emo = list(emo_counts.values())
+                # sort by frequency
+                emo_items = emo_counts.most_common()
+                labels_emo = [f"{k} ({translate_label_to_th(k)})" for k,_ in emo_items]
+                values_emo = [v for _,v in emo_items]
                 fig2, ax2 = plt.subplots()
                 ax2.pie(values_emo, labels=labels_emo, autopct='%1.1f%%')
                 ax2.set_title('Emotion distribution')
@@ -347,7 +405,7 @@ st.markdown("---")
 st.write("Notes:")
 st.write("• This app calls a large language model: ensure you have an API key and check model usage/costs.")
 st.write("• The Gemini integration is a placeholder: students should replace the call_gemini_placeholder() with their project's Gemini request logic (Google-auth, REST call to the models.generate endpoint, etc.).")
-st.write("• The prompt requires the LLM to return strict JSON; in practice you may need to refine the prompt or parse free-text outputs.")
+st.write("• The prompt requires the LLM to return strict JSON; in practice you may need to refine the prompt or handle non-JSON responses. The code now attempts stricter prompting and will report raw LLM responses in the explanation if parsing fails.")
 
 
 # End of file

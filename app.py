@@ -1,279 +1,260 @@
+# app.py
 import streamlit as st
 import pandas as pd
-import matplotlib.pyplot as plt
-import google.generativeai as genai
-import json
-import re
+import random
+import time
+import io
+from datetime import datetime
 
-# -----------------------------
-# Thai translations
-# -----------------------------
-sentiment_map_th = {
-    "positive": "เชิงบวก",
-    "negative": "เชิงลบ",
-    "neutral": "เป็นกลาง"
-}
+# ---- Optional: Google Gemini (example) ----
+# ให้ติดตั้ง google-generative-ai (pip install google-generative-ai)
+# และใน sidebar ผู้ใช้จะใส่ API key ของ Google Gemini (we'll configure inline).
+try:
+    import google.generativeai as genai
+    HAVE_GENAI = True
+except Exception:
+    HAVE_GENAI = False
 
-emotion_map_th = {
-    "joy": "สุข",
-    "anger": "โกรธ",
-    "sadness": "เศร้า",
-    "fear": "กลัว",
-    "surprise": "ประหลาดใจ",
-    "disgust": "ขยะแขยง",
-    "neutral": "เป็นกลาง"
-}
+# ---------------- Config ----------------
+QUESTIONS_DEFAULT = [
+    # 100 ตัวอย่างคำถาม (กรุณาปรับแต่งให้สนุก/เหมาะสม)
+    "พี่ชวนไปเที่ยวทะเล แต่งตัวปิคนิคด้วย — รับปะ?",
+    "พี่จะให้ตั๋วหนังสองใบ แต่ต้องดูหนังผีกับพี่ — รับปะ?",
+    "พี่ขอให้ช่วยกินซูชิคำสุดท้ายของพี่ — รับปะ?",
+    "พี่ยอมจ่ายขนมให้ แต่ต้องเล่าเรื่องประหลาดของตัวเอง — รับปะ?",
+    "พี่จะสอนเต้น TikTok หน่อย แต่ต้องเต้นหน้ากล้อง — รับปะ?",
+    "พี่จะให้ฟังเพลงโปรดทั้งอัลบั้มแบบยาว — รับปะ?",
+    "พี่จะไปคาเฟ่แมวด้วยกัน — รับปะ?",
+    "พี่เอามะม่วงมาแบ่งครึ่งแต่มีแมลงอยู่ข้างใน — รับปะ?",
+    "พี่บอกให้ช่วยเลือกชุดสำคัญ แต่ต้องใส่ไอเท็มตลกหนึ่งชิ้น — รับปะ?",
+    "พี่จะทำ dinner surprise แต่อาหารแปลก — รับปะ?",
+    # (เติมจนครบ 100 — ผมจะทำเป็นตัวอย่าง 100 ข้อสั้น ๆ)
+]
 
-# -----------------------------
-# Fallback rule-based classifier
-# -----------------------------
-def rule_based_classify(text):
-    text_lower = text.lower()
+# เติมให้ครบ 100 อัน (ถ้ list สั้นกว่ากำหนด จะวนซ้ำ)
+while len(QUESTIONS_DEFAULT) < 100:
+    QUESTIONS_DEFAULT += [f"สถานการณ์สนุก ๆ ข้อที่ {len(QUESTIONS_DEFAULT)+1} — รับปะ?"]
 
-    positive_keywords = ["good", "great", "love", "happy", "excellent", "ดี", "ชอบ", "สุดยอด"]
-    negative_keywords = ["bad", "terrible", "hate", "angry", "sad", "แย่", "เกลียด", "โกรธ", "เศร้า"]
+# ---------------- Helpers ----------------
+def init_session():
+    if "questions" not in st.session_state:
+        st.session_state.questions = QUESTIONS_DEFAULT.copy()
+    if "current_round" not in st.session_state:
+        st.session_state.current_round = []
+    if "round_index" not in st.session_state:
+        st.session_state.round_index = 0
+    if "answers" not in st.session_state:
+        # store dicts: [{q, answer, timestamp, timed_out}]
+        st.session_state.answers = []
+    if "play_history" not in st.session_state:
+        st.session_state.play_history = []  # list of rounds
+    if "api_key" not in st.session_state:
+        st.session_state.api_key = ""
+    if "model_name" not in st.session_state:
+        st.session_state.model_name = "gemini-pro"  # example
+    if "current_question_idx" not in st.session_state:
+        st.session_state.current_question_idx = 0
+    if "question_start_time" not in st.session_state:
+        st.session_state.question_start_time = None
 
-    emotions_map = {
-        "joy": ["good", "great", "love", "happy", "ดี", "ชอบ"],
-        "anger": ["angry", "โกรธ"],
-        "sadness": ["sad", "เศร้า"],
-        "disgust": ["disgust", "ขยะแขยง"]
-    }
+def sample_round(n=10):
+    # sample without replacement from full list
+    qbank = st.session_state.questions
+    return random.sample(qbank, n)
 
-    score_pos = sum([1 for w in positive_keywords if w in text_lower])
-    score_neg = sum([1 for w in negative_keywords if w in text_lower])
+def start_new_round():
+    st.session_state.current_round = sample_round(10)
+    st.session_state.current_question_idx = 0
+    st.session_state.question_start_time = time.time()
+    st.session_state.round_index += 1
 
-    if score_pos == 0 and score_neg == 0:
-        return None  # no strong clue → cannot override
+def record_answer(question, answer, timed_out=False):
+    st.session_state.answers.append({
+        "question": question,
+        "answer": answer,
+        "timed_out": timed_out,
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "round": st.session_state.round_index
+    })
 
-    if score_pos > score_neg:
-        sentiment = "positive"
-    elif score_neg > score_pos:
-        sentiment = "negative"
-    else:
-        sentiment = "neutral"
+def summarize_df():
+    if not st.session_state.answers:
+        return pd.DataFrame()
+    df = pd.DataFrame(st.session_state.answers)
+    # count choices per question
+    summary = df.groupby(["question", "answer"]).size().unstack(fill_value=0)
+    # add timed_out count
+    timed = df[df["timed_out"] == True].groupby("question").size()
+    summary["timed_out"] = timed
+    summary = summary.fillna(0).astype(int)
+    return summary.reset_index()
 
-    emo = []
-    for e, words in emotions_map.items():
-        if any(w in text_lower for w in words):
-            emo.append(e)
+# ---------------- UI ----------------
+st.set_page_config(page_title="ถ้าหนูถามพี่จะรับปะ — Game", layout="wide")
+init_session()
 
-    if not emo:
-        emo = ["neutral"]
+# Sidebar: API key, model
+st.sidebar.title("ตั้งค่า API (Google Gemini)")
+api_key_input = st.sidebar.text_input("วาง Google API Key (หรือ ENV)", type="password",
+                                      value=st.session_state.api_key)
+model_input = st.sidebar.text_input("Model name (ตัวอย่าง)", value=st.session_state.model_name)
+st.sidebar.markdown("**หมายเหตุ**: ต้องติดตั้ง `google-generative-ai` หากต้องการเรียก LLM จาก backend.")
 
-    reason = f"Rule-based detection: pos={score_pos}, neg={score_neg}"
+if api_key_input != st.session_state.api_key:
+    st.session_state.api_key = api_key_input
 
-    return sentiment, emo, reason
+st.session_state.model_name = model_input
 
-
-# -----------------------------
-# Gemini API (real implementation)
-# -----------------------------
-import google.generativeai as genai
-import json, re
-
-def get_available_model(api_key):
-    """ดึงชื่อโมเดลจริงจาก API เพื่อป้องกัน 404"""
-    genai.configure(api_key=api_key)
-    models = genai.list_models()
-    
-    # เลือกโมเดลที่รองรับ generateContent
-    for m in models:
-        if "generateContent" in m.supported_generation_methods:
-            if "gemini-1.5" in m.name:
-                return m.name  # เช่น models/gemini-1.5-flash-001
-    
-    # fallback
-    return "models/gemini-1.5-flash"
-
-import google.generativeai as genai
-import json, re
-
-def call_gemini(text, api_key):
+if HAVE_GENAI and st.session_state.api_key:
     try:
-        genai.configure(api_key=api_key)
-
-        # ชื่อโมเดลที่ถูกต้องสำหรับ python SDK
-        model = genai.GenerativeModel("gemini-1.5-flash")
-
-        prompt = f"""
-You are a multilingual sentiment + emotion classifier (Thai + English).
-Classify this text:
-{text}
-
-Reply ONLY in valid JSON:
-{{
-  "sentiment_en": "",
-  "sentiment_th": "",
-  "emotion_en": "",
-  "emotion_th": "",
-  "explanation_en": "",
-  "explanation_th": ""
-}}
-"""
-
-        response = model.generate_content(prompt)
-
-        clean = re.sub(r"```json|```", "", response.text).strip()
-        return json.loads(clean)
-
+        genai.configure(api_key=st.session_state.api_key)
     except Exception as e:
-        return {
-            "sentiment_en": "neutral",
-            "sentiment_th": "เป็นกลาง",
-            "emotion_en": "neutral",
-            "emotion_th": "เป็นกลาง",
-            "explanation_en": f"LLM error: {e}",
-            "explanation_th": f"เกิดข้อผิดพลาด: {e}"
-        }
+        st.sidebar.error(f"ไม่สามารถตั้งค่า API key: {e}")
 
+# Top controls
+col1, col2, col3 = st.columns([1,1,2])
+with col1:
+    if st.button("เริ่มรอบใหม่ (สุ่ม 10 ข้อ)"):
+        start_new_round()
+        st.success("เริ่มรอบใหม่แล้ว — ตอบให้ทัน 10 วินาทีต่อข้อ!")
+with col2:
+    if st.button("รีเซ็ตผลทั้งหมด"):
+        st.session_state.answers = []
+        st.session_state.play_history = []
+        st.success("รีเซ็ตข้อมูลเรียบร้อย")
+with col3:
+    st.write(f"รอบที่เล่น: {st.session_state.round_index}")
 
-        response = model.generate_content(prompt)
+st.markdown("---")
 
-        clean = re.sub(r"```json|```", "", response.text).strip()
-        return json.loads(clean)
-
+# Allow user to upload own question bank CSV/Excel
+st.sidebar.markdown("**นำเข้าไฟล์คำถาม (CSV / Excel)**")
+upload = st.sidebar.file_uploader("อัปโหลดไฟล์ (คอลัมน์: question)", type=["csv","xlsx","xls"])
+if upload:
+    try:
+        if upload.name.endswith(".csv"):
+            df_q = pd.read_csv(upload)
+        else:
+            df_q = pd.read_excel(upload)
+        if "question" in df_q.columns:
+            st.session_state.questions = df_q["question"].astype(str).tolist()
+            st.sidebar.success(f"โหลดคำถามจากไฟล์มา {len(st.session_state.questions)} ข้อ")
+        else:
+            st.sidebar.error("ไฟล์ต้องมีคอลัมน์ชื่อ `question`")
     except Exception as e:
-        return {
-            "sentiment_en": "neutral",
-            "sentiment_th": "เป็นกลาง",
-            "emotion_en": "neutral",
-            "emotion_th": "เป็นกลาง",
-            "explanation_en": f"LLM error: {e}",
-            "explanation_th": f"เกิดข้อผิดพลาด: {e}"
-        }
+        st.sidebar.error(f"อ่านไฟล์ไม่สำเร็จ: {e}")
 
+# If no current round, offer to start
+if not st.session_state.current_round:
+    st.info("กด 'เริ่มรอบใหม่ (สุ่ม 10 ข้อ)' เพื่อเริ่มเล่น")
+    st.stop()
 
-# -----------------------------
-# Streamlit UI
-# -----------------------------
-st.set_page_config(page_title="Sentiment & Emotion Dashboard", layout="wide")
-
-st.title("📊 Sentiment + Emotion Dashboard (TH/EN)")
-
-# Sidebar API key
-st.sidebar.header("🔑 API Key Settings")
-api_key = st.sidebar.text_input("Google Gemini API Key", type="password")
-
-st.sidebar.markdown("---")
-
-
-# -----------------------------
-# Upload or text input
-# -----------------------------
-st.subheader("Input")
-
-input_type = st.radio("เลือกประเภท input", ["กรอกข้อความ", "อัปโหลดไฟล์ CSV/Excel"])
-
-texts = []
-
-if input_type == "กรอกข้อความ":
-    user_text = st.text_area("พิมพ์ข้อความที่ต้องการวิเคราะห์", height=150)
-    if user_text.strip():
-        texts = [user_text]
-
+# Display current question (one at a time)
+idx = st.session_state.current_question_idx
+if idx >= len(st.session_state.current_round):
+    st.success("จบรอบแล้ว — ผลสรุปด้านล่าง")
+    # store round history
+    st.session_state.play_history.append({
+        "round": st.session_state.round_index,
+        "answers": st.session_state.answers[-10:]  # last 10 answers correspond to this round
+    })
 else:
-    uploaded = st.file_uploader("อัปโหลดไฟล์", type=["csv", "xlsx"])
-    if uploaded:
-        if uploaded.name.endswith(".csv"):
-            df_in = pd.read_csv(uploaded)
+    question = st.session_state.current_round[idx]
+    st.markdown(f"### ข้อที่ {idx+1}/10")
+    st.markdown(f"**{question}**")
+
+    # show remaining time (server-side approximation)
+    if st.session_state.question_start_time is None:
+        st.session_state.question_start_time = time.time()
+
+    elapsed = time.time() - st.session_state.question_start_time
+    remaining = max(0, 10 - int(elapsed))
+    st.write(f"เวลาเหลือ: **{remaining}** วินาที (ระบบประมาณการ)")
+
+    # Buttons for answers
+    col_a, col_b = st.columns(2)
+    answered_now = False
+    if col_a.button("✅ รับดิ"):
+        # check timeout
+        elapsed = time.time() - st.session_state.question_start_time
+        if elapsed > 10:
+            # timed out
+            record_answer(question, None, timed_out=True)
+            st.warning("ตอบช้า — ข้ามคำถาม (นับเป็น timed out).")
         else:
-            df_in = pd.read_excel(uploaded)
+            record_answer(question, "รับดิ", timed_out=False)
+            st.success("เลือก: รับดิ")
+        # move to next question
+        st.session_state.current_question_idx += 1
+        st.session_state.question_start_time = time.time()
+        st.experimental_rerun()
 
-        if "text" not in df_in.columns:
-            st.error("ไฟล์ต้องมีคอลัมน์ชื่อ 'text'")
+    if col_b.button("❌ ไม่รับดีกว่า"):
+        elapsed = time.time() - st.session_state.question_start_time
+        if elapsed > 10:
+            record_answer(question, None, timed_out=True)
+            st.warning("ตอบช้า — ข้ามคำถาม (n/a).")
         else:
-            texts = df_in["text"].astype(str).tolist()
+            record_answer(question, "ไม่รับดีกว่า", timed_out=False)
+            st.success("เลือก: ไม่รับดีกว่า")
+        st.session_state.current_question_idx += 1
+        st.session_state.question_start_time = time.time()
+        st.experimental_rerun()
 
+    # If time passed and user didn't click (on any rerun), we auto-timeout here
+    # Note: this auto-timeout triggers only when page reruns (e.g., from other button presses or refresh).
+    # For deterministic client-side timeout you'd use a JS component (see notes below).
+    if elapsed > 10:
+        # mark timed out and advance
+        record_answer(question, None, timed_out=True)
+        st.info("หมดเวลา — ข้ามคำถาม (ถูกบันทึกเป็น timed out).")
+        st.session_state.current_question_idx += 1
+        st.session_state.question_start_time = time.time()
+        st.experimental_rerun()
 
-# -----------------------------
-# Process Button (ENTER)
-# -----------------------------
-process = st.button("▶ เริ่มประมวลผล", use_container_width=True)
+st.markdown("---")
 
-if process:
+# Show DataFrame summary
+st.subheader("สรุปผล (DataFrame)")
+summary = summarize_df()
+if summary.empty:
+    st.write("ยังไม่มีคำตอบ — เล่นสักรอบแล้วจะเห็นสรุปที่นี่")
+else:
+    st.dataframe(summary)
 
-    if not api_key:
-        st.error("กรุณากรอก Gemini API key ที่ sidebar ก่อน")
-        st.stop()
+    # download buttons
+    csv = summary.to_csv(index=False).encode("utf-8")
+    st.download_button("ดาวน์โหลด CSV", data=csv, file_name="summary.csv", mime="text/csv")
 
-    if not texts:
-        st.warning("ยังไม่มีข้อมูลให้วิเคราะห์")
-        st.stop()
+    # Excel
+    towrite = io.BytesIO()
+    with pd.ExcelWriter(towrite, engine="xlsxwriter") as writer:
+        summary.to_excel(writer, index=False, sheet_name="summary")
+        writer.save()
+    towrite.seek(0)
+    st.download_button("ดาวน์โหลด Excel", data=towrite, file_name="summary.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-    results = []
+# Option: send aggregated results to LLM (example prompt)
+st.markdown("---")
+st.subheader("วิเคราะห์ผลด้วย LLM (ตัวอย่าง)")
 
-    for txt in texts:
+if not HAVE_GENAI:
+    st.info("ถ้าต้องการเรียก Google Gemini ให้ติดตั้ง `google-generative-ai` และให้ใส่ API key ใน sidebar")
+else:
+    if st.button("เรียก LLM สรุปแนวโน้มจากคำตอบล่าสุด"):
+        # Make a prompt that asks LLM to summarize the most popular choices and craft 3 fun insights
+        df_small = summary.copy().head(20).to_dict(orient="records")
+        prompt = (
+            "ฉันมีสรุปตารางคำถาม-คำตอบ (question + counts of choices). โปรดสรุปใจความสำคัญ 3 ข้อแบบเป็นภาษาไทย "
+            "และให้คำแนะนำเชิงสร้างสรรค์ 3 ข้อสำหรับปรับคำถามให้น่าสนใจขึ้น (short bullets). "
+            f"ตาราง: {df_small}"
+        )
+        try:
+            resp = genai.generate_text(model=st.session_state.model_name, prompt=prompt, max_output_tokens=512)
+            st.markdown("**LLM สรุป:**")
+            st.write(resp.text)
+        except Exception as e:
+            st.error(f"เรียก LLM ไม่สำเร็จ: {e}")
 
-        # Call LLM
-        result = call_gemini(txt, api_key)
-
-        sentiment = result["sentiment_en"].lower().strip()
-        emotion = result["emotion_en"].lower().strip().split(",")
-        explanation = result["explanation_en"]
-
-        # If LLM failed or returned neutral → use fallback
-        need_rb = False
-        if sentiment == "neutral" or emotion == ["neutral"] or "LLM error" in explanation:
-            need_rb = True
-
-        if need_rb:
-            rb = rule_based_classify(txt)
-            if rb is not None:
-                s_rb, e_rb, reason_rb = rb
-                sentiment = s_rb
-                emotion = e_rb
-                explanation += f"\n[Rule-based override: {reason_rb}]"
-
-        # Translate Thai
-        sentiment_th = f"({sentiment_map_th.get(sentiment, 'เป็นกลาง')})"
-        emotion_th = f"({emotion_map_th.get(emotion[0], 'เป็นกลาง')})"
-
-        results.append({
-            "text": txt,
-            "sentiment_en": sentiment,
-            "sentiment_th": sentiment_th,
-            "emotion_en": ", ".join(emotion),
-            "emotion_th": emotion_th,
-            "explanation_en": explanation
-        })
-
-    # DataFrame
-    df_out = pd.DataFrame(results)
-    df_out.index = pd.RangeIndex(start=1, stop=len(df_out) + 1)
-
-    st.subheader("Results")
-    st.dataframe(df_out, use_container_width=True)
-
-    # Download CSV
-    csv = df_out.to_csv().encode("utf-8-sig")
-    st.download_button("Download CSV", csv, "results.csv", "text/csv")
-
-    # -----------------------------
-    # Charts
-    # -----------------------------
-    st.subheader("Charts")
-
-    col1, col2 = st.columns(2)
-
-    # Bar chart for sentiment
-    with col1:
-        st.write("Sentiment Distribution")
-        counts = df_out["sentiment_en"].value_counts()
-
-        fig1 = plt.figure()
-        counts.plot(kind="bar")
-        plt.title("Sentiment Count")
-        plt.ylabel("Frequency")
-        st.pyplot(fig1)
-
-    # Pie chart for emotion
-    with col2:
-        st.write("Emotion Distribution")
-        emo_counts = df_out["emotion_en"].value_counts()
-
-        fig2 = plt.figure()
-        emo_counts.plot(kind="pie", autopct="%1.1f%%")
-        plt.title("Emotions")
-        st.pyplot(fig2)
-
+st.markdown("---")
+st.caption("App ตัวอย่าง — ปรับแต่งคำถาม/UX/การเรียก LLM ให้เหมาะสมกับ assignment ได้ตามต้องการ.")

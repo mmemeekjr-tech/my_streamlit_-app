@@ -4,7 +4,7 @@ Features:
 - Python only
 - 10 questions per round (random from question bank)
 - 10-second timeout (server-side style)
-- Buttons: รับดิ / ไม่รับดีกว่า
+- Buttons: ได้ดิ / อาจจะยัง
 - Leaderboard (SQLite)
 - Import/export questions
 - Export summary CSV/Excel
@@ -75,7 +75,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title(f"🎮 {APP_TITLE}")
-st.write("ธีม: Blue / Dark — เล่นง่าย ส่งงานได้ทันที")
 
 # ----------------- QUESTIONS: 100 แบบจริง ๆ -----------------
 DEFAULT_QUESTIONS = [
@@ -354,24 +353,24 @@ with colL:
             st.write('<div class="small-muted">หมายเหตุ: ถ้าตอบหลังเวลาจะถูกบันทึกเป็น TIMEOUT</div>', unsafe_allow_html=True)
 
             a1, a2 = st.columns(2)
-            if a1.button("✅ รับดิ"):
+            if a1.button("✅ ได้ดิ"):
                 if elapsed > 10:
                     record_answer(q, None, timed_out=True, elapsed_sec=elapsed)
                     st.warning("ตอบช้า — บันทึกเป็น TIMEOUT")
                 else:
-                    record_answer(q, "รับดิ", timed_out=False, elapsed_sec=elapsed)
-                    st.success("บันทึก: รับดิ (+1 คะแนน)")
+                    record_answer(q, "ได้ดิ", timed_out=False, elapsed_sec=elapsed)
+                    st.success("บันทึก: ได้ดิ (+1 คะแนน)")
                 st.session_state.q_index += 1
                 st.session_state.start_time = time.time()
                 st.rerun()
 
-            if a2.button("❌ ไม่รับดีกว่า"):
+            if a2.button("❌ อาจจะยัง"):
                 if elapsed > 10:
                     record_answer(q, None, timed_out=True, elapsed_sec=elapsed)
                     st.warning("ตอบช้า — บันทึกเป็น TIMEOUT")
                 else:
-                    record_answer(q, "ไม่รับดีกว่า", timed_out=False, elapsed_sec=elapsed)
-                    st.success("บันทึก: ไม่รับดีกว่า (+1 คะแนน)")
+                    record_answer(q, "อาจจะยัง", timed_out=False, elapsed_sec=elapsed)
+                    st.success("บันทึก: อาจจะยัง (+1 คะแนน)")
                 st.session_state.q_index += 1
                 st.session_state.start_time = time.time()
                 st.rerun()

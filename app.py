@@ -9,6 +9,7 @@ import os
 import time
 import json
 import math
+import requests
 from typing import List, Dict, Any
 import matplotlib.pyplot as plt
 from collections import Counter
@@ -134,25 +135,52 @@ def call_openai_chat_completion(api_key: str, prompt: str, model: str = 'gpt-4o-
             return r['choices'][0]['message']['content']
 
     except Exception as e:
-        # surface error for debugging
+        # surface error for debuggingdef
         raise RuntimeError(f"OpenAI call failed: {e}")
 
     raise RuntimeError("No compatible OpenAI client available in this environment. Install openai or provide a compatible client.")
 
+import requests
+import json
 
-def call_gemini_placeholder(api_key: str, prompt: str, model: str = 'gemini-pro') -> str:
-    """Placeholder for calling Google Gemini API.
-       The real Google Gemini REST call requires proper auth (OAuth2 or API key), an endpoint,
-       and up-to-date client libraries. Replace this function body with actual request logic
-       (e.g., using google-auth and googleapiclient or the official gemini-client when available).
-
-       For now this function raises NotImplementedError so students know to implement it for their environment.
+def call_gemini_api(api_key, prompt_text):
     """
-raise NotImplementedError(
-    "Please implement call_gemini_placeholder() with your project's Gemini call. "
-    "Typical approach: use google-auth to create credentials, then call the models.generate endpoint "
-    "and return the text result. See Google's official docs for the current client usage."
-)
+    Call Gemini API (Google AI Studio) using API key.
+    Works for models: gemini-1.5-flash, gemini-1.5-pro
+    """
+    if not api_key:
+        return {"error": "Missing Gemini API key"}
+
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+
+    headers = {
+        "Content-Type": "application/json"
+    }
+
+    body = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": prompt_text}
+                ]
+            }
+        ]
+    }
+
+    full_url = f"{url}?key={api_key}"
+    res = requests.post(full_url, headers=headers, data=json.dumps(body))
+
+    try:
+        result = res.json()
+    except:
+        return {"error": "Gemini output parse error", "raw": res.text}
+
+    # Extract text
+    try:
+        return result["candidates"][0]["content"]["parts"][0]["text"]
+    except Exception:
+        return {"error": "Gemini returned unexpected format", "raw": result}
+
 
 # -----------------------------
 # Streamlit UI
@@ -266,7 +294,7 @@ if start_processing:
                         if backend == 'openai':
                             raw = call_openai_chat_completion(openai_key, prompt, model=model_choice)
                         else:
-                            raw = call_gemini_placeholder(gemini_key, prompt, model=model_choice)
+                            raw = call_gemini_api(gemini_key, prompt)
                         break
                     except NotImplementedError as nie:
                         raise

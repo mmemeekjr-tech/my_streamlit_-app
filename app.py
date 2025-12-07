@@ -80,7 +80,7 @@ st.markdown("""<style>
 </style>""", unsafe_allow_html=True)
 
 st.title(f"🎮 {APP_TITLE}")
-st.write("ธีม: Blue / Dark — เล่นง่าย ส่งงานได้ทันที")
+
 
 # ----------------- QUESTIONS: default list -----------------
 DEFAULT_QUESTIONS = [
@@ -506,26 +506,26 @@ if st.session_state.answers:
         "จำนวน": [stats["ได้ดิ"], stats["อาจจะยัง"], stats["timeout"]]
     })
 
-    # Try Altair for muted colors; fallback to st.bar_chart
+    # Try Altair for gray bar chart with vertical labels
     if HAVE_ALTAIR:
-        # muted gray/blue palette
+        # gray palette for bar chart
         color_scale = alt.Scale(domain=["ได้ดิ", "อาจจะยัง", "หมดเวลา"],
-                                range=["#6b7280", "#9ca3af", "#374151"])  # muted tones
+                                range=["#808080", "#A9A9A9", "#696969"])  # gray tones
         bar = alt.Chart(chart_df).mark_bar().encode(
-            x=alt.X("คำตอบ:N", title="คำตอบ"),
+            x=alt.X("คำตอบ:N", title="คำตอบ", axis=alt.Axis(labelAngle=90)),
             y=alt.Y("จำนวน:Q", title="จำนวน"),
             color=alt.Color("คำตอบ:N", scale=color_scale, legend=None),
             tooltip=["คำตอบ", "จำนวน"]
-        ).properties(height=200)
+        ).properties(height=250)
         st.altair_chart(bar, use_container_width=True)
     else:
         st.bar_chart(chart_df.set_index("คำตอบ"))
 
-    # pie chart (altair)
+    # pie chart (altair) - light blue colors
     if HAVE_ALTAIR:
         pie = alt.Chart(chart_df).mark_arc().encode(
             theta=alt.Theta(field="จำนวน", type="quantitative"),
-            color=alt.Color(field="คำตอบ", type="nominal", scale=alt.Scale(range=["#6b7280", "#9ca3af", "#374151"])),
+            color=alt.Color(field="คำตอบ", type="nominal", scale=alt.Scale(range=["#87CEEB", "#ADD8E6", "#B0E0E6"])),
             tooltip=["คำตอบ", "จำนวน"]
         )
         st.altair_chart(pie, use_container_width=True)
@@ -558,7 +558,7 @@ else:
 
 # ----------------- AGGREGATE CHART: results across all players -----------------
 st.markdown("---")
-st.subheader("📈 ผลรวมการตอบของทุกคน (รวมทุกรอบ)")
+st.subheader("📈 ภาพรวมการตอบของทุกคน")
 
 df_agg = get_aggregate_answer_counts()
 
@@ -577,21 +577,21 @@ else:
         df_plot = pd.concat([df_plot, others.rename(columns={"cnt":"cnt"})], ignore_index=True, sort=False).fillna(0)
         df_plot["cnt"] = df_plot["cnt"].astype(int)
 
-    # Altair muted color mapping (prefer)
+    # Altair gray color mapping with vertical labels
     if HAVE_ALTAIR:
-        # define muted palette with default gray for unknowns
+        # define gray palette
         mapping = {
-            "ได้ดิ": "#6b7280",
-            "อาจจะยัง": "#9ca3af",
-            "TIMEOUT": "#374151"
+            "ได้ดิ": "#808080",
+            "อาจจะยัง": "#A9A9A9",
+            "TIMEOUT": "#696969"
         }
         color_scale = alt.Scale(domain=list(mapping.keys()), range=list(mapping.values()))
         bar = alt.Chart(df_plot).mark_bar().encode(
-            x=alt.X("answer:N", title="คำตอบ"),
+            x=alt.X("answer:N", title="คำตอบ", axis=alt.Axis(labelAngle=90)),
             y=alt.Y("cnt:Q", title="จำนวน (รวม)"),
             color=alt.Color("answer:N", scale=color_scale, legend=None),
             tooltip=["answer", "cnt"]
-        ).properties(height=250)
+        ).properties(height=280)
         st.altair_chart(bar, use_container_width=True)
     else:
         st.bar_chart(df_plot.set_index("answer")["cnt"])
@@ -639,8 +639,12 @@ if st.session_state.openai_key or (st.session_state.gemini_key and HAVE_GENAI):
                 st.error(f"OpenAI วิเคราะห์ไม่ได้: {e}")
         elif st.session_state.gemini_key and HAVE_GENAI:
             try:
-                genai.configure(api_key=st.session_state.model_name)
-                resp = genai.generate_text(model=st.session_state.model_name, prompt=prompt, max_output_tokens=500)
+                genai.configure(api_key=st.session_state.gemini_key)
+                client = genai.Client(api_key=st.session_state.gemini_key)
+                resp = client.models.generate_content(
+                    model=st.session_state.model_name,
+                    contents=prompt
+                )
                 st.markdown("**ผลวิเคราะห์ (Gemini):**")
                 st.write(resp.text)
             except Exception as e:
@@ -650,6 +654,4 @@ if st.session_state.openai_key or (st.session_state.gemini_key and HAVE_GENAI):
 else:
     st.info("กรอก OpenAI API Key หรือ Google Gemini API Key ใน sidebar ถ้าต้องการให้ AI วิเคราะห์")
 
-# ----------------- NOTES -----------------
-st.markdown("---")
-st.caption("หมายเหตุ: Timer ใน Streamlit ทำงานแบบ server-side — ถ้าผู้เล่นไม่ทำอะไรและไม่มีการ rerun หน้า จะไม่เลื่อนไปอัตโนมัติ. หากต้องการ client-side timeout ที่เลื่อนไปเองต้องใช้ JavaScript component (ขอได้ถ้าต้องการ).")
+# end

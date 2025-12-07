@@ -10,6 +10,7 @@ Features:
 - Export summary CSV/Excel
 - Optional Gemini/OpenAI API for analysis or generating questions
 - Bar charts and personality tiers
+- Aggregate answer counts persisted in DB (for "ผลรวมของทุกคน")
 """
 
 import streamlit as st
@@ -20,7 +21,6 @@ import sqlite3
 from datetime import datetime
 import io
 import os
-import xlsxwriter  # required by pandas ExcelWriter engine
 
 # Optional: Gemini (google.generativeai)
 try:
@@ -28,6 +28,13 @@ try:
     HAVE_GENAI = True
 except Exception:
     HAVE_GENAI = False
+
+# Optional: Altair for nicer charts
+try:
+    import altair as alt
+    HAVE_ALTAIR = True
+except Exception:
+    HAVE_ALTAIR = False
 
 # ----------------- CONFIG -----------------
 APP_TITLE = "ถ้าหนูถามพี่จะรับปะ?"
@@ -39,8 +46,7 @@ DEFAULT_MODEL = "gemini-pro"
 st.set_page_config(page_title=APP_TITLE, layout="centered", initial_sidebar_state="expanded")
 
 # Blue/Dark styling
-st.markdown("""
-<style>
+st.markdown("""<style>
 :root{
     --dark-bg: #0d1117;
     --card-bg: #161b22;
@@ -71,13 +77,12 @@ st.markdown("""
     border-radius: 10px;
     padding: 10px 14px;
 }
-</style>
-""", unsafe_allow_html=True)
+</style>""", unsafe_allow_html=True)
 
 st.title(f"🎮 {APP_TITLE}")
 st.write("ธีม: Blue / Dark — เล่นง่าย ส่งงานได้ทันที")
 
-# ----------------- QUESTIONS: 100 แบบจริง ๆ -----------------
+# ----------------- QUESTIONS: default list -----------------
 DEFAULT_QUESTIONS = [
     "ถ้าหนูชวนพี่ไปกินข้าวเย็นพิเศษ พี่จะรับปะ?",
     "ถ้าหนูขอให้พี่ช่วยถ่ายรูปให้ในงานสำคัญ พี่จะรับปะ?",
@@ -221,12 +226,20 @@ init_session()
 def init_db():
     conn = sqlite3.connect(DB_FILENAME, check_same_thread=False)
     c = conn.cursor()
+    # leaderboard stores individual round entries; aggregated per-player via SQL
     c.execute("""
     CREATE TABLE IF NOT EXISTS leaderboard (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         player TEXT,
         score INTEGER,
         last_played TEXT
+    )
+    """)
+    # answer_counts stores total counts of each answer across all rounds/players
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS answer_counts (
+        answer TEXT PRIMARY KEY,
+        cnt INTEGER
     )
     """)
     conn.commit()
@@ -248,6 +261,22 @@ def get_leaderboard_df():
         GROUP BY player
         ORDER BY total_score DESC
     """, conn)
+    return df
+
+def increment_answer_count(answer, increment=1):
+    if answer is None:
+        answer = "TIMEOUT"
+    c = conn.cursor()
+    # upsert: if exists, increment, else insert
+    c.execute("""
+    INSERT INTO answer_counts (answer, cnt)
+    VALUES (?, ?)
+    ON CONFLICT(answer) DO UPDATE SET cnt = cnt + excluded.cnt
+    """, (answer, increment))
+    conn.commit()
+
+def get_aggregate_answer_counts():
+    df = pd.read_sql_query("SELECT answer, cnt FROM answer_counts ORDER BY cnt DESC", conn)
     return df
 
 # ----------------- HELPERS -----------------
@@ -272,8 +301,14 @@ def record_answer(question, answer, timed_out=False, elapsed_sec=None):
         "timestamp": datetime.utcnow().isoformat() + "Z"
     }
     st.session_state.answers.append(rec)
+    # increase round score only when non-timeout and has explicit answer
     if not timed_out and answer is not None:
         st.session_state.last_round_score += 1
+
+    # update aggregate counts in DB
+    # we count "ได้ดิ", "อาจจะยัง", and "TIMEOUT" where appropriate
+    ans_key = answer if (answer is not None) else "TIMEOUT"
+    increment_answer_count(ans_key, increment=1)
 
 def summary_df_from_answers():
     if not st.session_state.answers:
@@ -337,6 +372,14 @@ if st.sidebar.button("เริ่มรอบใหม่ (สุ่ม 10 ข�
 
 st.sidebar.markdown("**Note:** Timer เป็น server-side (ถ้าไม่กดอะไรและไม่มี rerun จะรออยู่)")
 
+# ----------------- SIDEBAR: SHOW QUESTION BANK -----------------
+st.sidebar.markdown("---")
+st.sidebar.subheader(f"📚 Question Bank ({len(st.session_state.questions)} ข้อ)")
+with st.sidebar.expander("แสดงทั้งหมด"):
+    # show enumerated list (compact)
+    for i, q in enumerate(st.session_state.questions, start=1):
+        st.sidebar.markdown(f"{i}. {q}")
+
 # If user provided Gemini key and package available, configure
 if HAVE_GENAI and st.session_state.gemini_key:
     try:
@@ -358,7 +401,11 @@ with colL:
     else:
         idx = st.session_state.q_index
         total = len(st.session_state.round_questions)
-        st.progress(idx/total)
+        # avoid division by zero
+        if total > 0:
+            st.progress(idx/total)
+        else:
+            st.progress(0.0)
 
         if idx >= total:
             st.success("✔ จบรอบแล้ว — ดูสรุปด้านล่าง")
@@ -447,30 +494,44 @@ if st.session_state.answers:
 
     # stats & charts
     stats = compute_answer_stats()
-    st.markdown("**สถิติ:**")
+    st.markdown("**สถิติ (รอบนี้):**")
     st.write(f"- ตอบทั้งหมด: {stats['total']}")
     st.write(f"- ได้ดิ: {stats['ได้ดิ']}  |  อาจจะยัง: {stats['อาจจะยัง']}  |  หมดเวลา: {stats['timeout']}")
     if stats["avg_time"] is not None:
         st.write(f"- เวลาเฉลี่ยต่อคำตอบ: {stats['avg_time']:.1f} วินาที")
 
-    # bar chart
+    # bar chart (this round)
     chart_df = pd.DataFrame({
         "คำตอบ": ["ได้ดิ", "อาจจะยัง", "หมดเวลา"],
         "จำนวน": [stats["ได้ดิ"], stats["อาจจะยัง"], stats["timeout"]]
     })
-    st.bar_chart(chart_df.set_index("คำตอบ"))
+
+    # Try Altair for muted colors; fallback to st.bar_chart
+    if HAVE_ALTAIR:
+        # muted gray/blue palette
+        color_scale = alt.Scale(domain=["ได้ดิ", "อาจจะยัง", "หมดเวลา"],
+                                range=["#6b7280", "#9ca3af", "#374151"])  # muted tones
+        bar = alt.Chart(chart_df).mark_bar().encode(
+            x=alt.X("คำตอบ:N", title="คำตอบ"),
+            y=alt.Y("จำนวน:Q", title="จำนวน"),
+            color=alt.Color("คำตอบ:N", scale=color_scale, legend=None),
+            tooltip=["คำตอบ", "จำนวน"]
+        ).properties(height=200)
+        st.altair_chart(bar, use_container_width=True)
+    else:
+        st.bar_chart(chart_df.set_index("คำตอบ"))
 
     # pie chart (altair)
-    try:
-        import altair as alt
+    if HAVE_ALTAIR:
         pie = alt.Chart(chart_df).mark_arc().encode(
             theta=alt.Theta(field="จำนวน", type="quantitative"),
-            color=alt.Color(field="คำตอบ", type="nominal"),
+            color=alt.Color(field="คำตอบ", type="nominal", scale=alt.Scale(range=["#6b7280", "#9ca3af", "#374151"])),
             tooltip=["คำตอบ", "จำนวน"]
         )
         st.altair_chart(pie, use_container_width=True)
-    except Exception:
-        pass  # altair optional
+    else:
+        # skip pie if altair not available
+        pass
 
     # personality tier
     tier, tier_msg = personality_tier(stats)
@@ -481,7 +542,7 @@ if st.session_state.answers:
     csv = df_sum.to_csv(index=False).encode("utf-8")
     st.download_button("ดาวน์โหลดสรุป (CSV)", csv, "summary.csv", "text/csv")
 
-    # export Excel (fixed: use with and no .save())
+    # export Excel (use BytesIO)
     bio = io.BytesIO()
     with pd.ExcelWriter(bio, engine="xlsxwriter") as w:
         df_sum.to_excel(w, index=False, sheet_name="summary")
@@ -495,9 +556,49 @@ if st.session_state.answers:
 else:
     st.info("ยังไม่มีคำตอบ — เริ่มรอบใหม่และตอบคำถามเพื่อดูสรุป")
 
-# ----------------- QUESTION BANK -----------------
+# ----------------- AGGREGATE CHART: results across all players -----------------
 st.markdown("---")
-st.subheader("📘 Question Bank")
+st.subheader("📈 ผลรวมการตอบของทุกคน (รวมทุกรอบ)")
+
+df_agg = get_aggregate_answer_counts()
+
+if df_agg.empty:
+    st.info("ยังไม่มีสถิติรวมจากผู้เล่นทั้งหมด — คำตอบจะถูกเก็บเมื่อผู้เล่นตอบคำถาม")
+else:
+    # Make sure the common categories are present in the plot (for consistent ordering)
+    expected = ["ได้ดิ", "อาจจะยัง", "TIMEOUT"]
+    # merge so missing ones appear with 0
+    df_base = pd.DataFrame({"answer": expected})
+    df_plot = df_base.merge(df_agg, how="left", left_on="answer", right_on="answer").fillna(0)
+    df_plot["cnt"] = df_plot["cnt"].astype(int)
+    # If there are other answers, append them
+    others = df_agg[~df_agg["answer"].isin(expected)]
+    if not others.empty:
+        df_plot = pd.concat([df_plot, others.rename(columns={"cnt":"cnt"})], ignore_index=True, sort=False).fillna(0)
+        df_plot["cnt"] = df_plot["cnt"].astype(int)
+
+    # Altair muted color mapping (prefer)
+    if HAVE_ALTAIR:
+        # define muted palette with default gray for unknowns
+        mapping = {
+            "ได้ดิ": "#6b7280",
+            "อาจจะยัง": "#9ca3af",
+            "TIMEOUT": "#374151"
+        }
+        color_scale = alt.Scale(domain=list(mapping.keys()), range=list(mapping.values()))
+        bar = alt.Chart(df_plot).mark_bar().encode(
+            x=alt.X("answer:N", title="คำตอบ"),
+            y=alt.Y("cnt:Q", title="จำนวน (รวม)"),
+            color=alt.Color("answer:N", scale=color_scale, legend=None),
+            tooltip=["answer", "cnt"]
+        ).properties(height=250)
+        st.altair_chart(bar, use_container_width=True)
+    else:
+        st.bar_chart(df_plot.set_index("answer")["cnt"])
+
+# ----------------- QUESTION BANK (MAIN PAGE) -----------------
+st.markdown("---")
+st.subheader("📘 Question Bank (จัดการ)")
 st.write(f"จำนวนคำถามทั้งหมด: {len(st.session_state.questions)}")
 
 if st.button("บันทึกคำถามเป็นไฟล์ (questions_bank.csv)"):
@@ -538,7 +639,7 @@ if st.session_state.openai_key or (st.session_state.gemini_key and HAVE_GENAI):
                 st.error(f"OpenAI วิเคราะห์ไม่ได้: {e}")
         elif st.session_state.gemini_key and HAVE_GENAI:
             try:
-                genai.configure(api_key=st.session_state.gemini_key)
+                genai.configure(api_key=st.session_state.model_name)
                 resp = genai.generate_text(model=st.session_state.model_name, prompt=prompt, max_output_tokens=500)
                 st.markdown("**ผลวิเคราะห์ (Gemini):**")
                 st.write(resp.text)
@@ -552,4 +653,3 @@ else:
 # ----------------- NOTES -----------------
 st.markdown("---")
 st.caption("หมายเหตุ: Timer ใน Streamlit ทำงานแบบ server-side — ถ้าผู้เล่นไม่ทำอะไรและไม่มีการ rerun หน้า จะไม่เลื่อนไปอัตโนมัติ. หากต้องการ client-side timeout ที่เลื่อนไปเองต้องใช้ JavaScript component (ขอได้ถ้าต้องการ).")
-

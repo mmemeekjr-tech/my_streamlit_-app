@@ -296,7 +296,19 @@ def generate_with_genai(model_name, prompt):
     """
     last_exc = None
 
-    # 1) module-level generate_text
+    # 1) module-level generate_content / generate_text (prefer generate_content)
+    gen_content = getattr(genai, "generate_content", None)
+    if callable(gen_content):
+        try:
+            return gen_content(model=model_name, prompt=prompt, max_output_tokens=500)
+        except TypeError:
+            try:
+                return gen_content(model=model_name, prompt=prompt)
+            except Exception as e:
+                last_exc = e
+        except Exception as e:
+            last_exc = e
+
     gen_text = getattr(genai, "generate_text", None)
     if callable(gen_text):
         try:
@@ -312,7 +324,7 @@ def generate_with_genai(model_name, prompt):
     # 2) genai.models.<method>
     models_ns = getattr(genai, "models", None)
     if models_ns is not None:
-        for meth in ("generate", "generate_text", "generate_content", "create"):
+        for meth in ("generate_content", "generate_text", "generate", "create"):
             fn = getattr(models_ns, meth, None)
             if callable(fn):
                 try:
@@ -782,15 +794,11 @@ if st.session_state.openai_key or (st.session_state.gemini_key and HAVE_GENAI):
                 else:
                     st.warning("ไม่พบโมเดล Gemini ที่รองรับจากไลบรารี — ตรวจสอบ API key หรือเวอร์ชันของไลบรารี")
 
-                # v0.8.5 style: use genai.generate_text(...) and handle different response shapes
-                try:
-                    resp = genai.generate_text(model=st.session_state.model_name, prompt=prompt, max_output_tokens=500)
-                except TypeError:
-                    # older variants may use different parameter names
-                    resp = genai.generate_text(model=st.session_state.model_name, prompt=prompt)
+                # Use compatibility helper to call genai (tries generate_content first)
+                resp = generate_with_genai(st.session_state.model_name, prompt)
 
                 out = None
-                # common shapes: object with .text, dict with 'candidates', or object with .candidates
+                # parse common response shapes
                 if hasattr(resp, "text"):
                     out = resp.text
                 elif isinstance(resp, dict):
@@ -800,12 +808,16 @@ if st.session_state.openai_key or (st.session_state.gemini_key and HAVE_GENAI):
                     elif "outputs" in resp and resp["outputs"]:
                         o0 = resp["outputs"][0]
                         out = o0.get("content") or o0.get("text") or str(o0)
+                    elif "output" in resp:
+                        out = str(resp["output"])
                 else:
-                    # object-like with candidates attribute
                     try:
                         if hasattr(resp, "candidates") and resp.candidates:
                             c0 = resp.candidates[0]
                             out = getattr(c0, "content", None) or getattr(c0, "text", None) or str(c0)
+                        elif hasattr(resp, "outputs") and resp.outputs:
+                            o0 = resp.outputs[0]
+                            out = getattr(o0, "content", None) or getattr(o0, "text", None) or str(o0)
                     except Exception:
                         out = None
 

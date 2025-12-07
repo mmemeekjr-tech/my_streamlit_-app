@@ -72,7 +72,7 @@ def rule_based_classify(text):
 def call_gemini(text, api_key):
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel("gemini-1.5-flash-latest")
 
         prompt = f"""
 You are a sentiment and emotion classifier.
@@ -80,7 +80,7 @@ You are a sentiment and emotion classifier.
 Classify this text:
 {text}
 
-Respond ONLY in JSON:
+Respond ONLY in valid JSON:
 {{
   "sentiment_en": "",
   "sentiment_th": "",

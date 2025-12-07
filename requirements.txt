@@ -6,9 +6,8 @@ python-dotenv
 matplotlib
 streamlit>=1.24.0
 pandas
-xlsxwriter
 openpyxl
-xlsxwriter
+XlsxWriter
 sqlitedict
 # Optional for Google Gemini integration:
 google-generative-ai

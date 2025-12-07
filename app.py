@@ -525,7 +525,7 @@ if st.session_state.answers:
     if HAVE_ALTAIR:
         pie = alt.Chart(chart_df).mark_arc().encode(
             theta=alt.Theta(field="จำนวน", type="quantitative"),
-            color=alt.Color(field="คำตอบ", type="nominal", scale=alt.Scale(range=["#87CEEB", "#ADD8E6", "#B0E0E6"])),
+            color=alt.Color(field="คำตอบ", type="nominal", scale=alt.Scale(range=["#1E40AF", "#2563EB", "#1D4ED8"])),
             tooltip=["คำตอบ", "จำนวน"]
         )
         st.altair_chart(pie, use_container_width=True)
@@ -640,11 +640,8 @@ if st.session_state.openai_key or (st.session_state.gemini_key and HAVE_GENAI):
         elif st.session_state.gemini_key and HAVE_GENAI:
             try:
                 genai.configure(api_key=st.session_state.gemini_key)
-                client = genai.Client(api_key=st.session_state.gemini_key)
-                resp = client.models.generate_content(
-                    model=st.session_state.model_name,
-                    contents=prompt
-                )
+                model = genai.GenerativeModel(st.session_state.model_name)
+                resp = model.generate_content(prompt)
                 st.markdown("**ผลวิเคราะห์ (Gemini):**")
                 st.write(resp.text)
             except Exception as e:

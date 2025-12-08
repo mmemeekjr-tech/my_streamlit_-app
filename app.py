@@ -771,7 +771,7 @@ if st.session_state.openai_key or (st.session_state.gemini_key and HAVE_GENAI):
                 else:
                     out = str(resp)
 
-                st.markdown("**ผลวิเคราะห์ (Gemini):**")
+                st.markdown("**ผลวิเคราะห์ :**")
                 st.write(out)
             except Exception as e:
                 st.error(f"Gemini วิเคราะห์ไม่ได้: {e}")

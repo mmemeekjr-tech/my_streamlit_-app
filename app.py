@@ -438,11 +438,9 @@ if st.sidebar.button("เริ่มเกม"):
     new_round()
     st.rerun()
 
-st.sidebar.markdown("**Note:** Timer เป็น server-side (ถ้าไม่กดอะไรและไม่มี rerun จะรออยู่)")
-
 # ----------------- SIDEBAR: SHOW QUESTION BANK -----------------
 st.sidebar.markdown("---")
-st.sidebar.subheader(f"📚 Question Bank ({len(st.session_state.questions)} ข้อ)")
+st.sidebar.subheader(f"📚 Question Bank (100 ข้อ)")
 st.sidebar.write("สามารถดาวน์โหลดคำถามทั้งหมดได้ที่นี่")
 try:
     csv_bytes = pd.DataFrame({"question": st.session_state.questions}).to_csv(index=False).encode("utf-8")

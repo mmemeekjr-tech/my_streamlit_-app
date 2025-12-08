@@ -454,10 +454,19 @@ st.sidebar.markdown("**Note:** Timer เป็น server-side (ถ้าไม�
 # ----------------- SIDEBAR: SHOW QUESTION BANK -----------------
 st.sidebar.markdown("---")
 st.sidebar.subheader(f"📚 Question Bank ({len(st.session_state.questions)} ข้อ)")
-with st.sidebar.expander("แสดงทั้งหมด"):
-    # show enumerated list (compact)
-    for i, q in enumerate(st.session_state.questions, start=1):
-        st.sidebar.markdown(f"{i}. {q}")
+st.sidebar.markdown("---")
+st.sidebar.subheader(f"📚 Question Bank ({len(st.session_state.questions)} ข้อ)")
+st.sidebar.write("ไฟล์คำถามสำหรับดาวน์โหลด (ไม่แสดงทั้งหมดในหน้า)")
+try:
+    csv_bytes = pd.DataFrame({"question": st.session_state.questions}).to_csv(index=False).encode("utf-8")
+    st.sidebar.download_button("ดาวน์โหลด questions_bank.csv", csv_bytes, file_name=QUESTIONS_FILENAME, mime="text/csv")
+except Exception:
+    st.sidebar.write("ไม่สามารถเตรียมไฟล์สำหรับดาวน์โหลดได้ขณะนี้")
+
+if st.session_state.questions:
+    st.sidebar.markdown("ตัวอย่างคำถาม 5 ข้อ:")
+    for q in st.session_state.questions[:5]:
+        st.sidebar.markdown(f"- {q}")
 
 # If user provided Gemini key and package available, configure
 if HAVE_GENAI and st.session_state.gemini_key:
@@ -679,15 +688,11 @@ else:
 st.markdown("---")
 st.subheader("📘 Question Bank (จัดการ)")
 st.write(f"จำนวนคำถามทั้งหมด: {len(st.session_state.questions)}")
+st.info("คำถามทั้งหมดจะอยู่ใน sidebar — ดาวน์โหลดไฟล์จาก Sidebar หากต้องการ ไม่แสดงรายการทั้งหมดในหน้านี้เพื่อความกระชับ")
 
 if st.button("บันทึกคำถามเป็นไฟล์ (questions_bank.csv)"):
     pd.DataFrame({"question": st.session_state.questions}).to_csv(QUESTIONS_FILENAME, index=False)
-    st.success("บันทึกคำถามแล้ว")
-
-if os.path.exists(QUESTIONS_FILENAME):
-    with open(QUESTIONS_FILENAME, "rb") as f:
-        st.download_button("ดาวน์โหลด questions_bank.csv", f.read(),
-                           file_name=QUESTIONS_FILENAME, mime="text/csv")
+    st.success("บันทึกคำถามแล้ว (ไฟล์ถูกเขียนเป็น questions_bank.csv)")
 
 # ----------------- OPTIONAL: ANALYZE WITH LLM -----------------
 st.markdown("---")
@@ -795,7 +800,7 @@ st.markdown("""
     color: #d6e2f0;
     box-shadow: 0 2px 8px rgba(0,0,0,0.35);
 ">
- **ขอบคุณที่มาเล่นกันนะ**   
+ ----------ขอบคุณที่มาเล่นกันนะ----------
 </div>
 
 <hr>

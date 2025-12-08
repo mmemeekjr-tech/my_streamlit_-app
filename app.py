@@ -691,7 +691,7 @@ if os.path.exists(QUESTIONS_FILENAME):
 
 # ----------------- OPTIONAL: ANALYZE WITH LLM -----------------
 st.markdown("---")
-st.subheader("🧠 วิเคราะห์สไตล์การตอบด้วย AI (optional)")
+st.subheader("🧠 วิเคราะห์สไตล์การตอบ")
 
 if st.session_state.openai_key or (st.session_state.gemini_key and HAVE_GENAI):
     prompt = f"สรุปสไตล์การตอบของผู้เล่น {st.session_state.player or 'anonymous'} จากตารางนี้:\n\n"
@@ -700,7 +700,7 @@ if st.session_state.openai_key or (st.session_state.gemini_key and HAVE_GENAI):
     else:
         prompt += "ยังไม่มีคำตอบ"
 
-    if st.button("ให้ AI วิเคราะห์"):
+    if st.button("กดเพื่อดูผลวิเคราะห์เลย!"):
         # Prefer OpenAI if key provided
         if st.session_state.openai_key:
             try:
@@ -780,8 +780,6 @@ if st.session_state.openai_key or (st.session_state.gemini_key and HAVE_GENAI):
 else:
     st.info("กรอก OpenAI API Key หรือ Google Gemini API Key ใน sidebar ถ้าต้องการให้ AI วิเคราะห์")
 
-st.markdown("**ผลวิเคราะห์ (Gemini):**")
-st.write(out)
 
 # 🎉 ข้อความขอบคุณธีมน้ำเงิน-ดำ-เทา
 st.markdown("""
@@ -797,8 +795,7 @@ st.markdown("""
     color: #d6e2f0;
     box-shadow: 0 2px 8px rgba(0,0,0,0.35);
 ">
- **ขอบคุณที่มาเล่นนะ!**  
-หวังว่าการวิเคราะห์นี้จะช่วยให้สนุกและเห็นมุมมองใหม่ ๆ 
+ **ขอบคุณที่มาเล่นกันนะ**   
 </div>
 
 <hr>

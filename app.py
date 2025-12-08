@@ -22,6 +22,7 @@ from datetime import datetime
 import io
 import os
 
+        
 # Optional: Gemini (google.generativeai)
 try:
     import google.generativeai as genai
@@ -80,6 +81,7 @@ st.markdown("""<style>
 </style>""", unsafe_allow_html=True)
 
 st.title(f"🎮 {APP_TITLE}")
+st.markdown("เกมตอบคำถามแบบเลือก 2 ตัวเลือก ที่ออกแบบมาเพื่อความสนุกสนาน ทดสอบนิสัย วิธีคิด และสไตล์การตอบของผู้เล่น โดยแต่ละคำถามเป็น “สถานการณ์สมมติ” ผู้เล่นต้องตอบภายใน 10 วินาที หากหมดเวลาจะถือว่า ข้าม (Timeout)")
 
 
 # ----------------- QUESTIONS: default list -----------------
@@ -429,23 +431,10 @@ st.session_state.openai_key = st.sidebar.text_input("OpenAI API Key (optional)",
 st.session_state.gemini_key = st.sidebar.text_input("Google Gemini API Key (optional)", type="password", value=st.session_state.gemini_key)
 st.session_state.model_name = st.sidebar.text_input("Model name (for Gemini)", value=st.session_state.model_name)
 
-st.sidebar.markdown("---")
-st.sidebar.subheader("นำเข้าคำถาม (CSV)")
-upload = st.sidebar.file_uploader("อัปโหลดไฟล์คำถาม (ต้องมีคอลัมน์ 'question')", type=["csv", "xlsx"])
-if upload is not None:
-    try:
-        dfq = pd.read_csv(upload) if upload.name.lower().endswith(".csv") else pd.read_excel(upload)
-        if "question" in dfq.columns:
-            st.session_state.questions = dfq["question"].astype(str).tolist()
-            dfq.to_csv(QUESTIONS_FILENAME, index=False)
-            st.sidebar.success(f"โหลดคำถาม {len(st.session_state.questions)} ข้อแล้ว")
-        else:
-            st.sidebar.error("ไฟล์ต้องมีคอลัมน์ชื่อ 'question'")
-    except Exception as e:
-        st.sidebar.error(f"อ่านไฟล์ล้มเหลว: {e}")
+
 
 st.sidebar.markdown("---")
-if st.sidebar.button("เริ่มรอบใหม่ (สุ่ม 10 ข้อ)"):
+if st.sidebar.button("เริ่มเกม"):
     new_round()
     st.rerun()
 
@@ -454,19 +443,12 @@ st.sidebar.markdown("**Note:** Timer เป็น server-side (ถ้าไม�
 # ----------------- SIDEBAR: SHOW QUESTION BANK -----------------
 st.sidebar.markdown("---")
 st.sidebar.subheader(f"📚 Question Bank ({len(st.session_state.questions)} ข้อ)")
-st.sidebar.markdown("---")
-st.sidebar.subheader(f"📚 Question Bank ({len(st.session_state.questions)} ข้อ)")
-st.sidebar.write("ไฟล์คำถามสำหรับดาวน์โหลด (ไม่แสดงทั้งหมดในหน้า)")
+st.sidebar.write("สามารถดาวน์โหลดคำถามทั้งหมดได้ที่นี่")
 try:
     csv_bytes = pd.DataFrame({"question": st.session_state.questions}).to_csv(index=False).encode("utf-8")
     st.sidebar.download_button("ดาวน์โหลด questions_bank.csv", csv_bytes, file_name=QUESTIONS_FILENAME, mime="text/csv")
 except Exception:
     st.sidebar.write("ไม่สามารถเตรียมไฟล์สำหรับดาวน์โหลดได้ขณะนี้")
-
-if st.session_state.questions:
-    st.sidebar.markdown("ตัวอย่างคำถาม 5 ข้อ:")
-    for q in st.session_state.questions[:5]:
-        st.sidebar.markdown(f"- {q}")
 
 # If user provided Gemini key and package available, configure
 if HAVE_GENAI and st.session_state.gemini_key:
@@ -479,13 +461,14 @@ if HAVE_GENAI and st.session_state.gemini_key:
 colL, colR = st.columns([2,1])
 
 with colL:
-    st.markdown('<div class="card">', unsafe_allow_html=True)
 
     if not st.session_state.round_questions:
-        st.info("ยังไม่มีรอบที่เริ่ม — กด 'เริ่มรอบใหม่' ทาง sidebar หรือปุ่มด้านล่าง")
-        if st.button("เริ่มรอบใหม่ (สุ่ม 10 ข้อ)"):
-            new_round()
-            st.rerun()
+        # Centered start button when no round is active
+        c1, c2, c3 = st.columns([1,2,1])
+        with c2:
+            if st.button("เริ่มเกม"):
+                new_round()
+                st.rerun()
     else:
         idx = st.session_state.q_index
         total = len(st.session_state.round_questions)
@@ -544,41 +527,64 @@ with colL:
                 st.session_state.start_time = time.time()
                 st.rerun()
 
-    st.markdown('</div>', unsafe_allow_html=True)
+    # card wrapper removed to simplify layout
 
 with colR:
-    st.markdown('<div class="card">', unsafe_allow_html=True)
     st.subheader("🏆 Leaderboard & Score")
     if st.session_state.player:
         st.write(f"ผู้เล่น: **{st.session_state.player}**")
     else:
         st.write("ผู้เล่น: (anonymous)")
-    st.write(f"คะแนนรอบนี้: **{st.session_state.last_round_score}**")
+    # Cap displayed score to number of questions in the round to avoid accidental over-counting
+    displayed_score = st.session_state.last_round_score
+    try:
+        if st.session_state.round_questions:
+            displayed_score = min(displayed_score, len(st.session_state.round_questions))
+    except Exception:
+        pass
+    st.write(f"คะแนนรอบนี้: **{displayed_score}**")
 
     if st.button("บันทึกคะแนนรอบนี้"):
         if st.session_state.player:
-            update_leaderboard(st.session_state.player, st.session_state.last_round_score)
+            # ensure we don't save more than the number of questions in the round
+            save_score = displayed_score
+            update_leaderboard(st.session_state.player, save_score)
             st.success("บันทึกคะแนนสำเร็จ")
         else:
             st.warning("กรุณากรอกชื่อผู้เล่นใน sidebar เพื่อบันทึก")
+
+    # Note about saving scores
+    st.caption("หมายเหตุ: หากไม่กด 'บันทึกคะแนนรอบนี้' คะแนนรอบนี้จะไม่ถูกรวมเข้ากับคะแนนรวมของผู้เล่นอื่น")
 
     df_lb = get_leaderboard_df()
     if df_lb.empty:
         st.write("ยังไม่มีคะแนน")
     else:
-        st.dataframe(df_lb)
-    st.markdown('</div>', unsafe_allow_html=True)
+        # display leaderboard with 1-based rank index
+        try:
+            df_display = df_lb.copy()
+            df_display.index = range(1, len(df_display) + 1)
+            st.dataframe(df_display)
+        except Exception:
+            st.dataframe(df_lb)
+# card wrapper removed to simplify layout
 
 # ----------------- SUMMARY -----------------
 st.markdown("---")
 st.subheader("📊 สรุปผลรอบนี้")
 if st.session_state.answers:
-    df_sum = summary_df_from_answers()
+    df_sum: pd.DataFrame = summary_df_from_answers()
     # show columns in nice order
     cols_order = ["player", "question", "answer", "timed_out", "elapsed_sec", "timestamp"]
     df_sum = df_sum[[c for c in cols_order if c in df_sum.columns]]
 
-    st.dataframe(df_sum)
+    # present summary with 1-based index for readability
+    try:
+        df_sum_display = df_sum.copy()
+        df_sum_display.index = range(1, len(df_sum_display) + 1)
+        st.dataframe(df_sum_display)
+    except Exception:
+        st.dataframe(df_sum)
 
     # stats & charts
     stats = compute_answer_stats()
@@ -684,16 +690,39 @@ else:
     else:
         st.bar_chart(df_plot.set_index("answer")["cnt"])
 
-# ----------------- QUESTION BANK (MAIN PAGE) -----------------
-st.markdown("---")
-st.subheader("📘 Question Bank (จัดการ)")
-st.write(f"จำนวนคำถามทั้งหมด: {len(st.session_state.questions)}")
-st.info("คำถามทั้งหมดจะอยู่ใน sidebar — ดาวน์โหลดไฟล์จาก Sidebar หากต้องการ ไม่แสดงรายการทั้งหมดในหน้านี้เพื่อความกระชับ")
+    # Provide downloadable summary (aggregate answers + leaderboard)
+    try:
+        df_answers_all = df_agg.copy()
+        df_leader = get_leaderboard_df()
 
-if st.button("บันทึกคำถามเป็นไฟล์ (questions_bank.csv)"):
-    pd.DataFrame({"question": st.session_state.questions}).to_csv(QUESTIONS_FILENAME, index=False)
-    st.success("บันทึกคำถามแล้ว (ไฟล์ถูกเขียนเป็น questions_bank.csv)")
+        # overall metrics
+        total_answers = int(df_answers_all['cnt'].sum()) if not df_answers_all.empty else 0
+        overall = {
+            'metric': ['total_answers'],
+            'value': [total_answers]
+        }
+        df_overall = pd.DataFrame(overall)
 
+        # prepare Excel with multiple sheets
+        bio = io.BytesIO()
+        with pd.ExcelWriter(bio, engine="xlsxwriter") as writer:
+            df_answers_all.to_excel(writer, sheet_name="aggregate_answers", index=False)
+            df_leader.to_excel(writer, sheet_name="leaderboard", index=False)
+            df_overall.to_excel(writer, sheet_name="overall", index=False)
+        bio.seek(0)
+
+        st.download_button("ดาวน์โหลดสรุปการวิเคราะห์ (Excel)", data=bio.getvalue(), file_name="summary_analysis.xlsx",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+        # CSV of aggregate answers
+        csv_agg = df_answers_all.to_csv(index=False).encode('utf-8')
+        st.download_button("ดาวน์โหลดสรุปการวิเคราะห์ (CSV: aggregate answers)", data=csv_agg, file_name="aggregate_answers.csv", mime="text/csv")
+    except Exception as e:
+        st.error(f"ไม่สามารถเตรียมไฟล์สรุปได้: {e}")
+
+# (Question Bank is available via sidebar download)
+
+# ----------------- OPTIONAL: ANALYZE WITH LLM -----------------
 # ----------------- OPTIONAL: ANALYZE WITH LLM -----------------
 st.markdown("---")
 st.subheader("🧠 วิเคราะห์สไตล์การตอบ")
@@ -706,6 +735,7 @@ if st.session_state.openai_key or (st.session_state.gemini_key and HAVE_GENAI):
         prompt += "ยังไม่มีคำตอบ"
 
     if st.button("กดเพื่อดูผลวิเคราะห์เลย!"):
+        out = ""
         # Prefer OpenAI if key provided
         if st.session_state.openai_key:
             try:
@@ -724,66 +754,67 @@ if st.session_state.openai_key or (st.session_state.gemini_key and HAVE_GENAI):
         elif st.session_state.gemini_key and HAVE_GENAI:
             try:
                 genai.configure(api_key=st.session_state.gemini_key)
-                # Try to list available models and fall back to a supported one if needed
                 available = list_gemini_models()
                 if available:
                     if not st.session_state.model_name or st.session_state.model_name not in available:
-                        # pick the first available model as a sensible default
-                        chosen = available[0]
-                        st.session_state.model_name = chosen
-                else:
-                    pass
-                # Use compatibility helper to call genai (tries generate_content first)
+                        st.session_state.model_name = available[0]
                 resp = generate_with_genai(st.session_state.model_name, prompt)
 
-                out = None
-                # parse common response shapes
+                # parse response
                 if hasattr(resp, "text"):
                     out = resp.text
                 elif isinstance(resp, dict):
                     if "candidates" in resp and resp["candidates"]:
-                        c0 = resp["candidates"][0]
-                        out = c0.get("content") or c0.get("text") or str(c0)
+                        out = resp["candidates"][0].get("content") or str(resp)
                     elif "outputs" in resp and resp["outputs"]:
-                        o0 = resp["outputs"][0]
-                        out = o0.get("content") or o0.get("text") or str(o0)
-                    elif "output" in resp:
-                        out = str(resp["output"])
+                        out = resp["outputs"][0].get("content") or str(resp)
+                    else:
+                        out = str(resp)
                 else:
-                    try:
-                        if hasattr(resp, "candidates") and resp.candidates:
-                            c0 = resp.candidates[0]
-                            out = getattr(c0, "content", None) or getattr(c0, "text", None) or str(c0)
-                        elif hasattr(resp, "outputs") and resp.outputs:
-                            o0 = resp.outputs[0]
-                            out = getattr(o0, "content", None) or getattr(o0, "text", None) or str(o0)
-                    except Exception:
-                        out = None
-
-                if not out:
                     out = str(resp)
 
                 st.markdown("**ผลวิเคราะห์ (Gemini):**")
                 st.write(out)
             except Exception as e:
-                err = str(e)
-                # Common error when model name format is invalid from the API
-                if "unexpected model name format" in err or "GenerateContentRequest.model" in err or "unexpected model name" in err:
-                    available = list_gemini_models()
-                    if available:
-                        st.error(f"Gemini วิเคราะห์ไม่ได้: {err}")
-                        st.info("รายการโมเดลที่พบจาก Gemini API (เลือกรายการที่เหมาะสมใน sidebar หรือกด Refresh):")
-                        for m in available:
-                            st.write(f"- {m}")
-                    else:
-                        st.error(f"Gemini วิเคราะห์ไม่ได้: {err} — ไม่พบโมเดลที่รองรับจากไลบรารี")
-                        st.info("ตรวจสอบว่า API key ถูกต้อง และไลบรารี `google-generativeai` เป็นเวอร์ชันที่รองรับการเรียก ListModels")
-                else:
-                    st.error(f"Gemini วิเคราะห์ไม่ได้: {e}")
-        else:
-            st.error("ไม่มี LLM ที่ใช้งานได้ — กรุณาใส่ OpenAI หรือ Gemini API key")
+                st.error(f"Gemini วิเคราะห์ไม่ได้: {e}")
+
+        # ----------------- NEW: SAVE to session & download -----------------
+        if out:
+            st.session_state.ai_analysis_text = out
+            # TXT
+            st.download_button(
+                "ดาวน์โหลดผลวิเคราะห์ AI (TXT)",
+                data=out,
+                file_name=f"ai_analysis_{st.session_state.player or 'anonymous'}.txt",
+                mime="text/plain"
+            )
+            # CSV
+            df_ai = pd.DataFrame([{
+                "player": st.session_state.player or "anonymous",
+                "ai_analysis": out
+            }])
+            csv_ai = df_ai.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "ดาวน์โหลดผลวิเคราะห์ AI (CSV)",
+                data=csv_ai,
+                file_name=f"ai_analysis_{st.session_state.player or 'anonymous'}.csv",
+                mime="text/csv"
+            )
+            # Excel
+            bio_ai = io.BytesIO()
+            with pd.ExcelWriter(bio_ai, engine="xlsxwriter") as writer:
+                df_ai.to_excel(writer, index=False, sheet_name="AI Summary")
+            bio_ai.seek(0)
+            st.download_button(
+                "ดาวน์โหลดผลวิเคราะห์ AI (Excel)",
+                data=bio_ai.getvalue(),
+                file_name=f"ai_analysis_{st.session_state.player or 'anonymous'}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
 else:
-    st.info("กรอก OpenAI API Key หรือ Google Gemini API Key ใน sidebar ถ้าต้องการให้ AI วิเคราะห์")
+    st.info("กรอก OpenAI API Key หรือ Google Gemini API Key ใน sidebar เพื่อทำการวิเคราะห์")
+
+
 
 
 # 🎉 ข้อความขอบคุณธีมน้ำเงิน-ดำ-เทา
@@ -800,13 +831,8 @@ st.markdown("""
     color: #d6e2f0;
     box-shadow: 0 2px 8px rgba(0,0,0,0.35);
 ">
- ----------ขอบคุณที่มาเล่นกันนะ----------
+~~~~~~~~~~ ขอบคุณที่มาเล่นกันนะ ~~~~~~~~~~
 </div>
 
 <hr>
 """, unsafe_allow_html=True)
-
-
-
-
-# end

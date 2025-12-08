@@ -434,7 +434,7 @@ st.session_state.model_name = st.sidebar.text_input("Model name (for Gemini)", v
 
 
 st.sidebar.markdown("---")
-if st.sidebar.button("เริ่มเกม"):
+if st.sidebar.button("เริ่มเกมรอบใหม่"):
     new_round()
     st.rerun()
 

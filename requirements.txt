@@ -1,13 +1,7 @@
-streamlit
-pandas
-openai>=1.0
-google-generativeai
-python-dotenv
-matplotlib
-streamlit>=1.24.0
-pandas
-openpyxl
-XlsxWriter
-sqlitedict
-# Optional for Google Gemini integration:
-google-generative-ai
+streamlit>=1.25.0
+pandas>=2.0.0
+altair>=5.0.0
+xlsxwriter>=3.1.0
+openai>=1.0.0
+google-generativeai>=0.8.5
+

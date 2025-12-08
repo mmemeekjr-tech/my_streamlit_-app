@@ -781,7 +781,7 @@ if st.session_state.openai_key or (st.session_state.gemini_key and HAVE_GENAI):
             st.session_state.ai_analysis_text = out
             # TXT
             st.download_button(
-                "ดาวน์โหลดผลวิเคราะห์ AI (TXT)",
+                "ดาวน์โหลดผลวิเคราะห์(TXT)",
                 data=out,
                 file_name=f"ai_analysis_{st.session_state.player or 'anonymous'}.txt",
                 mime="text/plain"
@@ -793,7 +793,7 @@ if st.session_state.openai_key or (st.session_state.gemini_key and HAVE_GENAI):
             }])
             csv_ai = df_ai.to_csv(index=False).encode("utf-8")
             st.download_button(
-                "ดาวน์โหลดผลวิเคราะห์ AI (CSV)",
+                "ดาวน์โหลดผลวิเคราะห์(CSV)",
                 data=csv_ai,
                 file_name=f"ai_analysis_{st.session_state.player or 'anonymous'}.csv",
                 mime="text/csv"
@@ -804,7 +804,7 @@ if st.session_state.openai_key or (st.session_state.gemini_key and HAVE_GENAI):
                 df_ai.to_excel(writer, index=False, sheet_name="AI Summary")
             bio_ai.seek(0)
             st.download_button(
-                "ดาวน์โหลดผลวิเคราะห์ AI (Excel)",
+                "ดาวน์โหลดผลวิเคราะห์(Excel)",
                 data=bio_ai.getvalue(),
                 file_name=f"ai_analysis_{st.session_state.player or 'anonymous'}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
